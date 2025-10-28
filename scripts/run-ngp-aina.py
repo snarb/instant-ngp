@@ -24,8 +24,6 @@ from tqdm import tqdm
 
 import pyngp as ngp # noqa
 
-FULL_FFMPEG_PATH = "/home/ubuntu/anaconda3/envs/ngp/bin/ffmpeg"
-
 def parse_args():
 	parser = argparse.ArgumentParser(description="Run instant neural graphics primitives with additional configuration & output options")
 
@@ -80,6 +78,7 @@ def parse_args():
 		metavar=('min_x', 'min_y', 'min_z', 'max_x', 'max_y', 'max_z'),
 		help="Axis-aligned bounding box (min_x, min_y, min_z, max_x, max_y, max_z)"
 	)
+	parser.add_argument("--ffmpeg_path", default="", help="Path to ffmpeg executable. If not specified, uses system-wide ffmpeg.")
 
 	return parser.parse_args()
 
@@ -96,6 +95,9 @@ if __name__ == "__main__":
 
 	if args.mode:
 		print("Warning: the '--mode' argument is no longer in use. It has no effect. The mode is automatically chosen based on the scene.")
+
+	# Determine ffmpeg path
+	ffmpeg_path = args.ffmpeg_path if args.ffmpeg_path else "ffmpeg"
 
 	testbed = ngp.Testbed()
 	testbed.root_dir = ROOT_DIR
@@ -404,6 +406,6 @@ if __name__ == "__main__":
 				write_image(f"tmp/{i:04d}.jpg", np.clip(frame * 2**args.exposure, 0.0, 1.0), quality=100)
 
 		if not save_frames:
-			os.system(f"{FULL_FFMPEG_PATH} -y -framerate {args.video_fps} -i tmp/%04d.jpg -c:v libx264 -pix_fmt yuv420p {args.video_output}")
+			os.system(f"{ffmpeg_path} -y -framerate {args.video_fps} -i tmp/%04d.jpg -c:v libx264 -pix_fmt yuv420p {args.video_output}")
 
 		shutil.rmtree("tmp")

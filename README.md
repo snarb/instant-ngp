@@ -361,3 +361,161 @@ Many thanks to the authors of these brilliant projects!
 Copyright © 2022, NVIDIA Corporation. All rights reserved.
 
 This work is made available under the Nvidia Source Code License-NC. Click [here](LICENSE.txt) to view a copy of this license.
+
+
+---
+## ***AINA***
+
+scripts/train-ngp-aina.py
+
+
+# Instant-NGP Sequential Frame Trainer & Renderer
+
+A Python script for training Instant-NGP neural radiance field models on sequential frame datasets and rendering smooth videos by interpolating between per-frame trained models.
+
+## Overview
+
+This script automates the process of:
+1. Running COLMAP structure-from-motion on a reference frame
+2. Training separate Instant-NGP models for each frame in a sequence
+3. Rendering a smooth video by transitioning between the trained models along a camera path
+
+
+## Dataset Structure
+
+Your dataset should be organized as follows:
+
+```
+dataset_root/
+├── 0/
+│   ├── image1.jpg
+│   ├── image2.jpg
+│   └── ...
+├── 1/
+│   ├── image1.jpg
+│   ├── image2.jpg
+│   └── ...
+├── 2/
+│   └── ...
+└── ...
+```
+
+Each numbered subdirectory represents a frame/timestep with its own set of multi-view images.
+
+## Usage
+
+### Basic Training
+
+Train models for all frames in a dataset:
+
+```bash
+python scripts/train-ngp-aina.py /path/to/dataset_root --instant_root /path/to/instant-ngp
+```
+
+### Training with Custom Parameters
+
+```bash
+python scripts/train-ngp-aina.py /path/to/dataset_root \
+    --instant_root /path/to/instant-ngp \
+    --first_step_n_steps 20000 \
+    --following_n_steps 10000 \
+    --start_frame 0 \
+    --end_frame 50
+```
+
+### Training and Rendering
+
+Train models and immediately render a video:
+
+```bash
+python scripts/train-ngp-aina.py /path/to/dataset_root \
+    --instant_root /path/to/instant-ngp \
+    --render_after_train \
+    --render_camera_path camera_path.json \
+    --render_fps 30 \
+    --render_output output_video.mp4
+```
+
+### Render Only (Skip Training)
+
+If models are already trained, render a video without retraining:
+
+```bash
+python scripts/train-ngp-aina.py /path/to/dataset_root \
+    --instant_root /path/to/instant-ngp \
+    --render_only \
+    --render_camera_path camera_path.json \
+    --render_start_frame 0 \
+    --render_end_frame 50
+```
+
+## Command-Line Arguments
+
+### Core Arguments
+- `dataset_root` (required): Root directory containing frame subdirectories
+- `--instant_root`: Path to Instant-NGP repository root (default: current directory)
+
+### Training Arguments
+- `--first_step_n_steps`: Training steps for the first frame (default: 20000)
+- `--following_n_steps`: Training steps for subsequent frames (default: 10000)
+- `--start_frame`: First frame number to train (inclusive)
+- `--end_frame`: Last frame number to train (inclusive)
+
+### COLMAP Arguments
+- `--aabb_scale`: AABB scale parameter for colmap2nerf.py
+- `--mask_categories`: Mask categories for colmap2nerf.py
+- `--colmap_out`: Output path for transforms.json
+- `--skip_colmap`: Skip COLMAP if transforms.json already exists
+
+### Rendering Arguments
+- `--render_only`: Skip training and proceed directly to rendering
+- `--render_after_train`: Render video after training completes
+- `--render_camera_path`: Camera path JSON file (required for rendering)
+- `--render_start_frame`: First frame to include in render
+- `--render_end_frame`: Last frame to include in render
+- `--render_fps`: Output video framerate (default: 30)
+- `--render_palindrome`: Create palindrome sequence (e.g., 0-1-2-1-0)
+- `--render_output`: Output video path (default: dataset_root/combined.mp4)
+- `--render_tmpdir`: Temporary directory for frames (default: dataset_root/tmp_render)
+- `--render_keep_frames`: Keep individual rendered frames after video creation
+- `--render_extra_args`: Additional arguments to pass to run.py
+
+## How It Works
+
+1. **COLMAP Stage**: Runs structure-from-motion on the first frame to establish camera poses and generate `transforms.json`
+
+2. **Training Stage**: 
+   - Trains the first frame from scratch for `first_step_n_steps` iterations
+   - Subsequent frames continue training from the previous frame's snapshot for `following_n_steps` iterations
+   - This creates smooth transitions between models
+
+3. **Rendering Stage**:
+   - Divides the camera path into segments (one per frame)
+   - Renders each segment using the corresponding frame's trained model
+   - Stitches segments together with FFmpeg into a final video
+
+## Output
+
+- **Snapshots**: `snapshot_<frame_number>.msgpack` saved in each frame directory
+- **Transforms**: `transforms.json` copied to each frame directory and dataset root
+- **Video**: Final combined video at specified output path
+- **Logs**: `training_log.txt` in the dataset root directory
+
+## Tips
+
+- Adjust `first_step_n_steps` and `following_n_steps` based on scene complexity
+- Use `--render_palindrome` for looping animations
+- The `--render_start_frame` and `--render_end_frame` allow you to render subsets without retraining
+- Check `training_log.txt` for detailed execution information
+
+## Troubleshooting
+
+- **Missing snapshots**: Ensure training completed successfully for all frames
+- **COLMAP errors**: Verify your images have sufficient overlap and features
+- **Rendering issues**: Confirm camera path JSON is valid and compatible with Instant-NGP
+
+
+-------------
+scripts/run-ngp-aina.py
+The same as scripts/run.py but with extra params like aabb,
+rfl, ffmpeg_path. Use it when required for debugging.
