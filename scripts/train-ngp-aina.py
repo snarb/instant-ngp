@@ -350,7 +350,7 @@ def main():
          cur_step += steps_to_go
 
          run_cmd = [
-            sys.executable, str(instant_root / "scripts/run2.py"),
+            sys.executable, str(instant_root / "scripts/train-ngp-aina-full.py"),
             "--scene", str(frame),
             "--save_snapshot", str(snapshot_path),
             "--n_steps", str(cur_step)
