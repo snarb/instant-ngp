@@ -14,19 +14,50 @@ import os
 import logging
 import time
 
+log_file_path='log.txt'
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler(log_file_path, mode="a"),
+        logging.StreamHandler(sys.stdout),
+    ],
+    force=True,  # <-- important if something configured logging earlier
+)
+
 # Use the root logger configured in main()
 logger = logging.getLogger()
 
 
-def run(cmd, cwd=None):
-   """Executes a command and logs its execution and result."""
-   logger.info(f"Running: {' '.join(map(str, cmd))}")
-   result = subprocess.run(cmd, cwd=str(cwd) if cwd is not None else None, capture_output=True, text=True)
-   if result.returncode != 0:
-      error_msg = f"Command failed: {' '.join(map(str, cmd))} (rc={result.returncode})\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
-      logger.error(error_msg)
-      sys.exit(error_msg)
+def run(cmd, cwd=None, env=None):
+    logger.info("Running: %s", " ".join(map(str, cmd)))
 
+    env2 = os.environ.copy()
+    env2.update(env or {})
+    env2.setdefault("PYTHONUNBUFFERED", "1")
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env2,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    try:
+        for line in process.stdout:
+            logger.info("[child] %s", line.rstrip())
+    except Exception:
+        logger.exception("While streaming child output")
+
+    rc = process.wait()
+    if rc != 0:
+        logger.error("Command failed (rc=%s): %s", rc, " ".join(map(str, cmd)))
+        sys.exit(1)
+    return rc
 
 def try_int_sort(paths):
    """Tries to sort paths by integer name, falling back to string sort."""
@@ -98,8 +129,9 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
    """
    instant_root = Path(instant_root)
    tmp_dir = Path(tmp_dir)
-   shutil.rmtree(tmp_dir)
-   os.makedirs(tmp_dir, exist_ok=True)
+   if tmp_dir.exists():
+	   shutil.rmtree(tmp_dir, ignore_errors=True)
+   tmp_dir.mkdir(parents=True, exist_ok=True)
 
    rendered_frame_paths = []
    total_frames_in_sequence = len(sequence_frames)
@@ -135,8 +167,8 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
       VIDEO_DURATION = 30 # frames_number = 40 * 30 = 1200
       total_rendered_frames_cnt = fps * VIDEO_DURATION
       frames_per_segment = int(total_rendered_frames_cnt / len(sequence_frames))
-      START_FRAME = frames_per_segment * i
-      END_FRAME = frames_per_segment * (i + 1)
+      #START_FRAME = frames_per_segment * i
+      #END_FRAME = frames_per_segment * (i + 1)
       #SEGMENG_DURATION = 1
       # FRAMES_PER_SEGMENT = 2
       # START_FRAME = FRAMES_PER_SEGMENT * i
@@ -146,6 +178,8 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
       frames_per_segment = fps * 1
       START_FRAME = frames_per_segment * i
       END_FRAME = frames_per_segment * (i + 1)
+
+
       render_cmd = [
          sys.executable,
          str(instant_root / "scripts/run-ngp-aina.py"),
@@ -160,7 +194,6 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
          # KEY CHANGE: Output to an image sequence format. run.py will fill in the frame number.
          "--video_output", str(temp_output_pattern),
 		 "--aabb", "0.39", "0.13", "0.25", "0.65", "0.70", "0.67"
-
       ]
       if extra_args:
          render_cmd += list(extra_args)
@@ -178,20 +211,22 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
 
       # Move the rendered frame to its final, consistently named location for ffmpeg
       #shutil.move(str(expected_source_frame), str(final_frame_path))
-      final_frame_path = temp_output_pattern
-      rendered_frame_paths.append(final_frame_path)
+      #final_frame_path = temp_output_pattern
+      #rendered_frame_paths.append(final_frame_path)
 
       render_duration = time.time() - render_start_time
       logger.info(f"Frame {i+1} rendered in {render_duration:.2f} seconds.")
 
-   if not rendered_frame_paths:
-      logger.error("No frames were rendered; cannot create video.")
-      return
+   # if not rendered_frame_paths:
+   #    logger.error("No frames were rendered; cannot create video.")
+   #    return
 
-   logger.info(f"Stitching {len(rendered_frame_paths)} frames into final video: {output_path}")
+   logger.info(f"Stitching   frames into final video: {output_path}")
+
+   ffmpeg_path = args.ffmpeg_path if args.ffmpeg_path else "ffmpeg"
    # KEY CHANGE: Use ffmpeg to create a video from the sequence of rendered PNG images
    ffmpeg_cmd = [
-      "ffmpeg", "-y",
+      "/home/ubuntu/anaconda3/envs/ngp/bin/ffmpeg", "-y",
       "-framerate", str(fps),
       "-i", str(tmp_dir / "render_%04d.png"),
       "-c:v", "libx264",
@@ -200,19 +235,19 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
    ]
    run(ffmpeg_cmd, cwd=None)
 
-   if not keep_frames:
-      logger.info("Cleaning up temporary rendered frames.")
-      for p in rendered_frame_paths:
-         try:
-            p.unlink()
-         except Exception:
-            pass
-      try:
-         # Try to remove the directory if it's empty
-         tmp_dir.rmdir()
-      except OSError:
-         logger.warning(f"Could not remove temporary directory {tmp_dir} as it may not be empty.")
-         pass
+   # if not keep_frames:
+   #    logger.info("Cleaning up temporary rendered frames.")
+   #    for p in rendered_frame_paths:
+   #       try:
+   #          p.unlink()
+   #       except Exception:
+   #          pass
+   #    try:
+   #       # Try to remove the directory if it's empty
+   #       tmp_dir.rmdir()
+   #    except OSError:
+   #       logger.warning(f"Could not remove temporary directory {tmp_dir} as it may not be empty.")
+   #       pass
 
 
 def main():
@@ -223,8 +258,8 @@ def main():
    parser.add_argument("--instant_root", type=Path, default=Path.cwd(), help="Path to instant-ngp repo root (default: current dir)")
 
    # --- Training Arguments ---
-   parser.add_argument("--first_step_n_steps", type=int, default=20000, help="Training steps for first frame (default: 20000)")
-   parser.add_argument("--following_n_steps", type=int, default=10000, help="Training steps for subsequent frames (default: 10000)")
+   parser.add_argument("--first_step_n_steps", type=int, default=40000, help="Training steps for first frame (default: 20000)")
+   parser.add_argument("--following_n_steps", type=int, default=15000, help="Training steps for subsequent frames (default: 10000)")
    parser.add_argument("--start_frame", type=int, default=None, help="The first frame number to start training from (inclusive).")
    parser.add_argument("--end_frame", type=int, default=None, help="The last frame number to train (inclusive).")
 
@@ -248,6 +283,8 @@ def main():
                   help="Temporary directory for rendered frames (default: dataset_root/tmp_render)")
    parser.add_argument("--render_keep_frames", action="store_true", help="Do not delete individual rendered frames after video creation")
    parser.add_argument("--render_extra_args", nargs="*", help="Extra args for run.py during rendering (e.g. --network mynet.json)")
+   parser.add_argument("--ffmpeg_path", default="", help="Path to ffmpeg executable. If not specified, uses system-wide ffmpeg.")
+
    parser.add_argument(
 	   "--multi_camera",
 	   action="store_true",
@@ -347,13 +384,19 @@ def main():
          snapshot_path = frame / f"snapshot_{frame.name}.msgpack"
          is_first_ever_frame = (idx == 0) # Check index in the filtered list, not against all_frames
          steps_to_go = args.first_step_n_steps if is_first_ever_frame else args.following_n_steps
-         cur_step += steps_to_go
+         #cur_step += steps_to_go  # --n_steps
+         resume_step = args.first_step_n_steps - args.following_n_steps
+		 # Note on schedule of LR:
+		 #After **20,000 steps (decay_start)**, the base learning rate of **1e-2** begins to decay — every
+		 # **10,000 steps (decay_interval)** it is multiplied by **0.33 (decay_base)**.
+		 # Before reaching 20,000 steps, the original learning rate (1e-2) is used.
 
          run_cmd = [
             sys.executable, str(instant_root / "scripts/run-ngp-aina.py"),
             "--scene", str(frame),
             "--save_snapshot", str(snapshot_path),
-            "--n_steps", str(cur_step)
+            "--n_steps", str(steps_to_go), # was cur_step
+			"--override_training_step", str(resume_step) # will start from this stem
          ]
          if not is_first_ever_frame and prev_snapshot:
             run_cmd += ["--load_snapshot", str(prev_snapshot)]
@@ -401,9 +444,6 @@ def main():
       final_output = args.render_output.resolve() if args.render_output else (dataset_root / "combined.mp4")
       tmp_dir = (args.render_tmpdir.resolve() if args.render_tmpdir else (dataset_root / "tmp_render"))
       tmp_dir = Path(tmp_dir)
-      if tmp_dir.exists() and tmp_dir.is_dir():
-       shutil.rmtree(tmp_dir)
-      tmp_dir.mkdir(parents=True, exist_ok=True)
       seq_frames = build_sequence(rendering_frames, palindrome=args.render_palindrome)
       logger.info(f"Rendering a video from {len(seq_frames)} total frames/models.")
 
