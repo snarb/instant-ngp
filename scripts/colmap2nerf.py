@@ -18,14 +18,15 @@ import json
 import sys
 import math
 import cv2
-import os
 import shutil
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 SCRIPTS_FOLDER = os.path.join(ROOT_DIR, "scripts")
 
 def parse_args():
-	parser = argparse.ArgumentParser(description="Convert a text colmap export to nerf format transforms.json; optionally convert video to images, and optionally run colmap in the first place.")
+	parser = argparse.ArgumentParser(
+		description="Convert a text colmap export to nerf format transforms.json; optionally convert video to images, and optionally run colmap in the first place."
+	)
 
 	parser.add_argument("--video_in", default="", help="Run ffmpeg first to convert a provided video file into a set of images. Uses the video_fps parameter also.")
 	parser.add_argument("--video_fps", default=2)
@@ -44,7 +45,19 @@ def parse_args():
 	parser.add_argument("--vocab_path", default="", help="Vocabulary tree path.")
 	parser.add_argument("--overwrite", action="store_true", help="Do not ask for confirmation for overwriting existing images and COLMAP data.")
 	parser.add_argument("--mask_categories", nargs="*", type=str, default=[], help="Object categories that should be masked out from the training images. See `scripts/category2id.json` for supported categories.")
+
+	# New: single-camera is default; enable multi-camera explicitly
+	parser.add_argument(
+		"--multi_camera",
+		action="store_true",
+		help="Allow multiple cameras (different resolutions create separate camera entries). Default is SINGLE camera."
+	)
+
 	args = parser.parse_args()
+
+	# Derive the flag used elsewhere in the code
+	args.single_camera = not args.multi_camera  # default True unless --multi_camera is set
+
 	return args
 
 def do_system(arg):
@@ -89,7 +102,7 @@ def run_ffmpeg(args):
 	time_slice = args.time_slice
 	if time_slice:
 		start, end = time_slice.split(",")
-		time_slice_value = f",select='between(t\,{start}\,{end})'"
+		time_slice_value = f",select='between(t\\,{start}\\,{end})'"
 	do_system(f"{ffmpeg_binary} -i {video} -qscale:v 1 -qmin 1 -vf \"fps={fps}{time_slice_value}\" {images}/%04d.jpg")
 
 def run_colmap(args):
@@ -109,18 +122,31 @@ def run_colmap(args):
 
 	db = args.colmap_db
 	images = "\"" + args.images + "\""
-	db_noext=str(Path(db).with_suffix(""))
+	db_noext = str(Path(db).with_suffix(""))
 
-	if args.text=="text":
-		args.text=db_noext+"_text"
-	text=args.text
-	sparse=db_noext+"_sparse"
+	if args.text == "text":
+		args.text = db_noext + "_text"
+	text = args.text
+	sparse = db_noext + "_sparse"
 	print(f"running colmap with:\n\tdb={db}\n\timages={images}\n\tsparse={sparse}\n\ttext={text}")
 	if not args.overwrite and (input(f"warning! folders '{sparse}' and '{text}' will be deleted/replaced. continue? (Y/n)").lower().strip()+"y")[:1] != "y":
 		sys.exit(1)
 	if os.path.exists(db):
 		os.remove(db)
-	do_system(f"{colmap_binary} feature_extractor --ImageReader.camera_model {args.colmap_camera_model} --ImageReader.camera_params \"{args.colmap_camera_params}\" --SiftExtraction.estimate_affine_shape=true --SiftExtraction.domain_size_pooling=true --ImageReader.single_camera 1 --database_path {db} --image_path {images}")
+
+	# single or multi camera flag
+	single_flag = 1 if args.single_camera else 0
+
+	do_system(
+		f"{colmap_binary} feature_extractor "
+		f"--ImageReader.camera_model {args.colmap_camera_model} "
+		f"--ImageReader.camera_params \"{args.colmap_camera_params}\" "
+		f"--SiftExtraction.estimate_affine_shape=true "
+		f"--SiftExtraction.domain_size_pooling=true "
+		f"--ImageReader.single_camera {single_flag} "
+		f"--database_path {db} --image_path {images}"
+	)
+
 	match_cmd = f"{colmap_binary} {args.colmap_matcher}_matcher --SiftMatching.guided_matching=true --database_path {db}"
 	if args.vocab_path:
 		match_cmd += f" --VocabTreeMatching.vocab_tree_path {args.vocab_path}"
@@ -199,6 +225,7 @@ if __name__ == "__main__":
 	AABB_SCALE = int(args.aabb_scale)
 	SKIP_EARLY = int(args.skip_early)
 	IMAGE_FOLDER = args.images
+	""" Note: args.text is expected to contain the exported COLMAP TXT model (cameras.txt, images.txt, points3D.txt) """
 	TEXT_FOLDER = args.text
 	OUT_PATH = args.out
 
@@ -298,6 +325,7 @@ if __name__ == "__main__":
 		i = 0
 		bottom = np.array([0.0, 0.0, 0.0, 1.0]).reshape([1, 4])
 		if len(cameras) == 1:
+			# A single camera in COLMAP model → bake intrinsics at the top level
 			camera = cameras[camera_id]
 			out = {
 				"camera_angle_x": camera["camera_angle_x"],
@@ -333,13 +361,12 @@ if __name__ == "__main__":
 			if i < SKIP_EARLY*2:
 				continue
 			if  i % 2 == 1:
-				elems=line.split(" ") # 1-4 is quat, 5-7 is trans, 9ff is filename (9, if filename contains no spaces)
-				#name = str(PurePosixPath(Path(IMAGE_FOLDER, elems[9])))
-				# why is this requireing a relitive path while using ^
+				elems = line.split(" ") # 1-4 is quat, 5-7 is trans, 9ff is filename (9, if filename contains no spaces)
+				# build a relative path into the frames (keeps Instant-NGP happy)
 				image_rel = os.path.relpath(IMAGE_FOLDER)
 				name = str(f"./{image_rel}/{'_'.join(elems[9:])}")
 				b = sharpness(name)
-				print(name, "sharpness=",b)
+				print(name, "sharpness=", b)
 				image_id = int(elems[0])
 				qvec = np.array(tuple(map(float, elems[1:5])))
 				tvec = np.array(tuple(map(float, elems[5:8])))
@@ -355,8 +382,9 @@ if __name__ == "__main__":
 
 					up += c2w[0:3,1]
 
-				frame = {"file_path":name,"sharpness":b,"transform_matrix": c2w}
+				frame = {"file_path": name, "sharpness": b, "transform_matrix": c2w}
 				if len(cameras) != 1:
+					# embed per-frame camera intrinsics when multiple cameras exist
 					frame.update(cameras[int(elems[8])])
 				out["frames"].append(frame)
 	nframes = len(out["frames"])
@@ -411,7 +439,7 @@ if __name__ == "__main__":
 
 	for f in out["frames"]:
 		f["transform_matrix"] = f["transform_matrix"].tolist()
-	print(nframes,"frames")
+	print(nframes, "frames")
 	print(f"writing {OUT_PATH}")
 	with open(OUT_PATH, "w") as outfile:
 		json.dump(out, outfile, indent=2)

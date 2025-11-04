@@ -345,8 +345,10 @@ def main():
          fix_transforms_paths(frame / "transforms.json", frame, overwrite=True)
 
          snapshot_path = frame / f"snapshot_{frame.name}.msgpack"
-         is_first_ever_frame = (idx == 0) # Check index in the filtered list, not against all_frames
+         #is_first_ever_frame = (idx == 0) # Check index in the filtered list, not against all_frames
+         is_first_ever_frame = True
          steps_to_go = args.first_step_n_steps if is_first_ever_frame else args.following_n_steps
+
          cur_step += steps_to_go
 
          run_cmd = [
