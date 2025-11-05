@@ -667,7 +667,7 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("visualized_dimension", &Testbed::m_visualized_dimension)
 		.def_readwrite("visualized_layer", &Testbed::m_visualized_layer)
 		.def_property_readonly("loss", [](py::object& obj) { return obj.cast<Testbed&>().m_loss_scalar.val(); })
-		.def_readonly("training_step", &Testbed::m_training_step)
+		.def_property("training_step", &Testbed::training_step, &Testbed::set_training_step)
 		.def_readonly("nerf", &Testbed::m_nerf)
 		.def_readonly("sdf", &Testbed::m_sdf)
 		.def_readonly("image", &Testbed::m_image)

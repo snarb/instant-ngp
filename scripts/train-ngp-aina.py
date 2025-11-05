@@ -1,10 +1,24 @@
 #!/usr/bin/env python3
-import sys
+"""
+Instant-NGP per-frame training and rendering automation.
 
-# Update this path to your instant-ngp 'build' directory if needed
-pyngp_path = '/home/ubuntu/repos/instant-ngp/build/'
-sys.path.append(pyngp_path)
-import pyngp as ngp  # noqa: F401 (import kept for compatibility, not used directly here)
+This script automates:
+1. Running COLMAP once on a reference frame to generate transforms.json.
+2. Training each frame sequentially, saving per-frame snapshots.
+3. Rendering a combined video sequence using the trained snapshots.
+
+Features:
+- Recreates logs on each run.
+- Stores snapshots per-frame in a specified root.
+- Optional rendering with configurable AABB and ffmpeg path.
+- Can preserve or clean temporary render directories.
+
+Author: Pavlo Konovalov
+Refactored by ChatGPT (GPT-5)
+"""
+
+from __future__ import annotations
+import sys
 import argparse
 import shutil
 import subprocess
@@ -14,22 +28,37 @@ import os
 import logging
 import time
 
-log_file_path='log.txt'
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(log_file_path, mode="a"),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,  # <-- important if something configured logging earlier
-)
-
-# Use the root logger configured in main()
-logger = logging.getLogger()
+# Path to pyngp build for side-effect import
+pyngp_path = '/home/ubuntu/repos/instant-ngp/build/'
+sys.path.append(pyngp_path)
+try:
+    import pyngp as ngp  # noqa: F401 (side-effect import)
+except Exception:
+    pass
 
 
-def run(cmd, cwd=None, env=None):
+def configure_logging(log_path: Path) -> logging.Logger:
+    """Configure logger to both file and stdout; overwrite existing log file."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger()
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+
+    fh = logging.FileHandler(log_path, mode="w")
+    sh = logging.StreamHandler(sys.stdout)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    fh.setFormatter(fmt)
+    sh.setFormatter(fmt)
+
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+    logger.info("Logging initialized. Writing to %s", log_path)
+    return logger
+
+
+def run(cmd, cwd: Path | None = None, env: dict | None = None) -> int:
+    """Run a subprocess with streaming logs and fail fast if non-zero exit code."""
+    logger = logging.getLogger()
     logger.info("Running: %s", " ".join(map(str, cmd)))
 
     env2 = os.environ.copy()
@@ -48,6 +77,7 @@ def run(cmd, cwd=None, env=None):
     )
 
     try:
+        assert process.stdout is not None
         for line in process.stdout:
             logger.info("[child] %s", line.rstrip())
     except Exception:
@@ -55,412 +85,407 @@ def run(cmd, cwd=None, env=None):
 
     rc = process.wait()
     if rc != 0:
-        logger.error("Command failed (rc=%s): %s", rc, " ".join(map(str, cmd)))
+        logger.error("Command failed (rc=%s)", rc)
         sys.exit(1)
     return rc
 
+
 def try_int_sort(paths):
-   """Tries to sort paths by integer name, falling back to string sort."""
-   try:
-      return sorted(paths, key=lambda p: int(p.name))
-   except Exception:
-      return sorted(paths, key=lambda p: p.name)
+    """Sort directories numerically by name if possible, else lexicographically."""
+    try:
+        return sorted(paths, key=lambda p: int(p.name))
+    except Exception:
+        return sorted(paths, key=lambda p: p.name)
 
 
 def fix_transforms_paths(json_path: Path, source_dir: Path, overwrite: bool = True):
-   """
-   Replace all "file_path" entries in an instant-ngp transforms.json so that they point to files
-   inside `source_dir`, and replace the frame-number suffix in the filename to match the
-   source_dir name.
-   """
-   json_path = Path(json_path)
-   source_dir = Path(source_dir)
-   frame_name = source_dir.name  # the frame number we want to insert into filenames
+    """Update `file_path` fields in transforms.json to point to actual frame image paths.
 
-   if not json_path.exists():
-      raise FileNotFoundError(f"transforms.json not found: {json_path}")
+    The function replaces the trailing frame token in file names so that
+    each `file_path` resolves to `source_dir/<prefix>.<frame_name><ext>`.
+    """
+    json_path = Path(json_path)
+    source_dir = Path(source_dir)
+    frame_name = source_dir.name
 
-   with json_path.open("r") as f:
-      data = json.load(f)
+    if not json_path.exists():
+        raise FileNotFoundError(f"transforms.json not found: {json_path}")
 
-   frames = data.get("frames", [])
-   changed = False
-   for frame in frames:
-      if "file_path" not in frame:
-         continue
-      orig_fp = frame["file_path"]
-      orig_name = Path(orig_fp).name
+    with json_path.open("r") as f:
+        data = json.load(f)
 
-      ext = Path(orig_name).suffix
-      stem = orig_name[:-len(ext)] if ext else orig_name
+    frames = data.get("frames", [])
+    changed = False
+    for frame in frames:
+        if "file_path" not in frame:
+            continue
+        orig_name = Path(frame["file_path"]).name
+        ext = Path(orig_name).suffix
+        stem = orig_name[:-len(ext)] if ext else orig_name
+        prefix = stem.rsplit('.', 1)[0] if '.' in stem else stem
+        new_name = f"{prefix}.{frame_name}{ext}" if prefix else f"{frame_name}{ext}"
+        new_fp = str((source_dir / new_name).resolve())
+        if frame.get("file_path") != new_fp:
+            frame["file_path"] = new_fp
+            changed = True
 
-      if '.' in stem:
-         prefix, _ = stem.rsplit('.', 1)
-      else:
-         prefix = stem
+    if overwrite and changed:
+        with json_path.open("w") as f:
+            json.dump(data, f, indent=2)
 
-      new_name = f"{prefix}.{frame_name}{ext}" if prefix else f"{frame_name}{ext}"
-      new_fp = str((source_dir / new_name).resolve())
-
-      if frame.get("file_path") != new_fp:
-         frame["file_path"] = new_fp
-         changed = True
-
-   if overwrite and changed:
-      with json_path.open("w") as f:
-         json.dump(data, f, indent=2)
-
-   return data
+    return data
 
 
 def build_sequence(frames, palindrome=False):
-   """Builds a sequence of frames for rendering. A simple forward pass, or a palindrome."""
-   seq = list(frames)
-   if palindrome and len(frames) > 1:
-      seq = frames + frames[-2::-1]
-   return seq
+    """Return ordered list of frames, optionally mirrored for palindrome rendering."""
+    seq = list(frames)
+    if palindrome and len(frames) > 1:
+        seq = frames + frames[-2::-1]
+    return seq
 
 
-def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames, fps: int,
-                    output_path: Path, tmp_dir: Path, keep_frames: bool, extra_args):
-   """
-   Renders a smooth video by rendering a single frame from each snapshot
-   at the corresponding point in the camera path, then stitching them together.
-   """
-   instant_root = Path(instant_root)
-   tmp_dir = Path(tmp_dir)
-   if tmp_dir.exists():
-	   shutil.rmtree(tmp_dir, ignore_errors=True)
-   tmp_dir.mkdir(parents=True, exist_ok=True)
+def run_colmap(instant_root: Path, reference_frame: Path, out_path: Path, aabb_scale: int | None,
+               multi_camera: bool, mask_categories: list[str] | None, skip_colmap: bool):
+    """Run colmap2nerf.py to generate transforms.json, unless skipped."""
+    logger = logging.getLogger()
+    text_folder = reference_frame / "sparse"
+    text_folder.mkdir(parents=True, exist_ok=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-   rendered_frame_paths = []
-   total_frames_in_sequence = len(sequence_frames)
+    colmap_cmd = [
+        sys.executable, str(instant_root / "scripts/colmap2nerf.py"),
+        "--colmap_db", str(reference_frame / "database.db"),
+        "--text", str(text_folder),
+        "--images", str(reference_frame),
+        "--out", str(out_path),
+        "--run_colmap", "--overwrite",
+    ]
+    if aabb_scale:
+        colmap_cmd += ["--aabb_scale", str(aabb_scale)]
+    if multi_camera:
+        colmap_cmd += ["--multi_camera"]
+    if mask_categories:
+        colmap_cmd += ["--mask_categories", *map(str, mask_categories)]
 
-   logger.info(f"Preparing to render {total_frames_in_sequence} individual frames to create the final video.")
+    if not skip_colmap:
+        logger.info("Running colmap2nerf.py using reference frame: %s", reference_frame.name)
+        run(colmap_cmd, cwd=instant_root)
+    else:
+        logger.info("Skipping COLMAP. Assuming transforms.json exists at: %s", out_path)
 
-   for i, frame in enumerate(sequence_frames):
-      # if i == 0:
-      #  continue
-      render_start_time = time.time()
-      snapshot = frame / f"snapshot_{frame.name}.msgpack"
-      if not snapshot.exists():
-         alt = None
-         for ext in (".msgpack", ".ingp"):
-            t = frame / f"snapshot_{frame.name}{ext}"
-            if t.exists():
-               alt = t
-               break
-         if not alt:
-            for f in frame.iterdir():
-               if f.name.startswith("snapshot_"):
-                  alt = f
-                  break
-         if alt:
-            snapshot = alt
-         else:
-            logger.warning(f"Snapshot not found for frame {frame}. Skipping this frame.")
-            continue
-
-      # A temporary output pattern for the image sequence from run.py
-      #temp_output_pattern = tmp_dir / f"temp_render_{i}_%04d.png"
-      temp_output_pattern = tmp_dir / f"render_%04d.png"
-      VIDEO_DURATION = 30 # frames_number = 40 * 30 = 1200
-      total_rendered_frames_cnt = fps * VIDEO_DURATION
-      frames_per_segment = int(total_rendered_frames_cnt / len(sequence_frames))
-      #START_FRAME = frames_per_segment * i
-      #END_FRAME = frames_per_segment * (i + 1)
-      #SEGMENG_DURATION = 1
-      # FRAMES_PER_SEGMENT = 2
-      # START_FRAME = FRAMES_PER_SEGMENT * i
-      # END_FRAME = FRAMES_PER_SEGMENT * (i + 1)
-      #video_duration = i * 1 # 1 sec per frame
-      video_duration = len(sequence_frames) * 1
-      frames_per_segment = fps * 1
-      START_FRAME = frames_per_segment * i
-      END_FRAME = frames_per_segment * (i + 1)
+    if not out_path.exists():
+        raise FileNotFoundError(f"transforms.json not found at {out_path} after COLMAP stage.")
 
 
-      render_cmd = [
-         sys.executable,
-         str(instant_root / "scripts/run-ngp-aina.py"),
-         "--scene", str(frame),
-         "--load_snapshot", str(snapshot),
-         "--video_camera_path", str(camera_path),
-         "--video_fps", str(fps),
-         # Set n_seconds so that t = frame_index / total_frames is correctly computed inside run.py
-         "--video_n_seconds", str(video_duration),
-         # KEY CHANGE: Render ONLY the single frame at index `i` from the camera path
-         "--video_render_range", str(START_FRAME), str(END_FRAME),
-         # KEY CHANGE: Output to an image sequence format. run.py will fill in the frame number.
-         "--video_output", str(temp_output_pattern),
-		 "--aabb", "0.39", "0.13", "0.25", "0.65", "0.70", "0.67"
-      ]
-      if extra_args:
-         render_cmd += list(extra_args)
+def copy_transforms_to_all(out_path: Path, dataset_root: Path, all_frames: list[Path]):
+    """Copy the generated transforms.json to all frame subfolders for consistency."""
+    logger = logging.getLogger()
+    target_dataset_transform = dataset_root / "transforms.json"
+    shutil.copy2(out_path, target_dataset_transform)
+    logger.info("Copied %s -> %s", out_path, target_dataset_transform)
 
-      logger.info(f"Rendering frame {i + 1}/{total_frames_in_sequence} using model from {frame.name}")
-      run(render_cmd, cwd=str(instant_root))
-
-      # The expected output filename will have the frame index 'i' filled in by run.py
-      #expected_source_frame = Path(str(temp_output_pattern) % i)
-      #final_frame_path = tmp_dir / f"final_{i:04d}.png"
-
-      # if not expected_source_frame.exists():
-      #    logger.warning(f"Rendered frame not produced for model {frame.name}: expected {expected_source_frame}")
-      #    continue
-
-      # Move the rendered frame to its final, consistently named location for ffmpeg
-      #shutil.move(str(expected_source_frame), str(final_frame_path))
-      #final_frame_path = temp_output_pattern
-      #rendered_frame_paths.append(final_frame_path)
-
-      render_duration = time.time() - render_start_time
-      logger.info(f"Frame {i+1} rendered in {render_duration:.2f} seconds.")
-
-   # if not rendered_frame_paths:
-   #    logger.error("No frames were rendered; cannot create video.")
-   #    return
-
-   logger.info(f"Stitching   frames into final video: {output_path}")
-
-   ffmpeg_path = args.ffmpeg_path if args.ffmpeg_path else "ffmpeg"
-   # KEY CHANGE: Use ffmpeg to create a video from the sequence of rendered PNG images
-   ffmpeg_cmd = [
-      "/home/ubuntu/anaconda3/envs/ngp/bin/ffmpeg", "-y",
-      "-framerate", str(fps),
-      "-i", str(tmp_dir / "render_%04d.png"),
-      "-c:v", "libx264",
-      "-pix_fmt", "yuv420p",
-      str(output_path)
-   ]
-   run(ffmpeg_cmd, cwd=None)
-
-   # if not keep_frames:
-   #    logger.info("Cleaning up temporary rendered frames.")
-   #    for p in rendered_frame_paths:
-   #       try:
-   #          p.unlink()
-   #       except Exception:
-   #          pass
-   #    try:
-   #       # Try to remove the directory if it's empty
-   #       tmp_dir.rmdir()
-   #    except OSError:
-   #       logger.warning(f"Could not remove temporary directory {tmp_dir} as it may not be empty.")
-   #       pass
+    for frame in all_frames:
+        dst = frame / "transforms.json"
+        if dst.resolve() != out_path.resolve():
+            shutil.copy2(out_path, dst)
 
 
-def main():
-   parser = argparse.ArgumentParser(description="Train Instant-NGP model per frame and optionally render combined video.", add_help=True)
+def train_frames(instant_root: Path, training_frames: list[Path], first_steps: int, follow_steps: int,
+                 snapshots_root: Path, extra_args: list[str]):
+    """Train Instant-NGP per-frame; save snapshots to snapshots_root/<frame>/.
 
-   # --- Core Arguments ---
-   parser.add_argument("dataset_root", type=Path, help="Root directory with frame subdirectories")
-   parser.add_argument("--instant_root", type=Path, default=Path.cwd(), help="Path to instant-ngp repo root (default: current dir)")
+    Note on schedule of LR:
+    After **20,000 steps (decay_start)**, the base learning rate of **1e-2** begins to decay — every
+    **10,000 steps (decay_interval)** it is multiplied by **0.33 (decay_base)**.
+    Before reaching 20,000 steps, the original learning rate (1e-2) is used.
+    """
+    logger = logging.getLogger()
+    prev_snapshot: Path | None = None
+    for idx, frame in enumerate(training_frames):
+        frame_start = time.time()
+        logger.info("--- Training frame %s (%d/%d) ---", frame.name, idx + 1, len(training_frames))
 
-   # --- Training Arguments ---
-   parser.add_argument("--first_step_n_steps", type=int, default=40000, help="Training steps for first frame (default: 20000)")
-   parser.add_argument("--following_n_steps", type=int, default=15000, help="Training steps for subsequent frames (default: 10000)")
-   parser.add_argument("--start_frame", type=int, default=None, help="The first frame number to start training from (inclusive).")
-   parser.add_argument("--end_frame", type=int, default=None, help="The last frame number to train (inclusive).")
+        # Ensure transforms.json points to the current frame images
+        fix_transforms_paths(frame / "transforms.json", frame, overwrite=True)
 
-   # --- COLMAP Arguments ---
-   parser.add_argument("--aabb_scale", type=int, help="aabb_scale arg for colmap2nerf.py")
-   parser.add_argument("--mask_categories", nargs="*", help="mask_categories arg for colmap2nerf.py")
-   parser.add_argument("--colmap_out", type=Path, help="Where to write transforms.json (default: first frame folder)")
-   parser.add_argument("--skip_colmap", action="store_true", help="Do not run colmap (if transforms.json is already present)")
+        # Create per-frame snapshot directory
+        frame_snap_dir = snapshots_root / frame.name
+        if frame_snap_dir.exists():
+            shutil.rmtree(frame_snap_dir, ignore_errors=True)
+        frame_snap_dir.mkdir(parents=True, exist_ok=True)
 
-   # --- Rendering Arguments ---
-   parser.add_argument("--render_only", action="store_true", help="Skip all training and colmap steps and proceed directly to rendering.")
-   parser.add_argument("--render_after_train", action="store_true",
-                  help="After training, render a combined video from per-frame snapshots")
-   parser.add_argument("--render_camera_path", type=Path, help="Camera path JSON for video rendering (required for rendering)")
-   parser.add_argument("--render_start_frame", type=int, default=None, help="First frame number to include in the render (inclusive).")
-   parser.add_argument("--render_end_frame", type=int, default=None, help="Last frame number to include in the render (inclusive).")
-   parser.add_argument("--render_fps", type=int, default=30, help="Output FPS for the final video (default: 30)")
-   parser.add_argument("--render_palindrome", action="store_true", help="Make sequence palindrome (e.g., a-b-c-b-a), doubling the frames.")
-   parser.add_argument("--render_output", type=Path, default=None, help="Final video output path (default: dataset_root/combined.mp4)")
-   parser.add_argument("--render_tmpdir", type=Path, default=None,
-                  help="Temporary directory for rendered frames (default: dataset_root/tmp_render)")
-   parser.add_argument("--render_keep_frames", action="store_true", help="Do not delete individual rendered frames after video creation")
-   parser.add_argument("--render_extra_args", nargs="*", help="Extra args for run.py during rendering (e.g. --network mynet.json)")
-   parser.add_argument("--ffmpeg_path", default="", help="Path to ffmpeg executable. If not specified, uses system-wide ffmpeg.")
+        snapshot_path = frame_snap_dir / f"snapshot_{frame.name}.msgpack"
+        steps_to_go = first_steps if idx == 0 else first_steps + follow_steps
+        resume_step = 0 if idx == 0 else first_steps
 
-   parser.add_argument(
-	   "--multi_camera",
-	   action="store_true",
-	   help="Forward to colmap2nerf.py to allow multiple cameras (different resolutions). "
-			"By default colmap2nerf.py uses SINGLE camera unless this flag is present."
-   )
-   args, extra_args = parser.parse_known_args()
-   dataset_root = args.dataset_root.resolve()
-
-   # --- Setup Logging ---
-   log_file_path = dataset_root / "training_log.txt"
-   logging.basicConfig(
-      level=logging.INFO,
-      format="%(asctime)s [%(levelname)s] %(message)s",
-      handlers=[logging.FileHandler(log_file_path, mode='a'), logging.StreamHandler(sys.stdout)]
-   )
-   logger.info(f"--- Starting new script run ---")
-
-   instant_root = args.instant_root.resolve()
-   if not dataset_root.is_dir():
-      logger.error(f"Dataset root does not exist or is not a directory: {dataset_root}")
-      sys.exit(1)
-
-   all_frames = try_int_sort([d for d in dataset_root.iterdir() if d.is_dir()])
-   if not all_frames:
-      logger.error("No frame subdirectories found in dataset_root")
-      sys.exit(1)
-
-   if not args.render_only:
-      # --- Filter frames for TRAINING based on args ---
-      training_frames = all_frames
-      if args.start_frame is not None or args.end_frame is not None:
-         logger.info(f"Filtering training frames for range: [{args.start_frame}, {args.end_frame}]")
-         filtered = []
-         for frame in all_frames:
-            try:
-               frame_num = int(frame.name)
-               if args.start_frame is not None and frame_num < args.start_frame: continue
-               if args.end_frame is not None and frame_num > args.end_frame: continue
-               filtered.append(frame)
-            except ValueError:
-               logger.warning(f"Skipping non-integer frame name '{frame.name}' during filtering.")
-         training_frames = filtered
-
-      if not training_frames:
-         logger.error("No frames matched the specified --start_frame/--end_frame filter. Nothing to train.")
-         sys.exit(1)
-
-      logger.info(f"Found {len(training_frames)} frames to train out of {len(all_frames)} total.")
-
-      # --- COLMAP Stage (uses the first frame of the whole dataset as reference) ---
-      reference_frame = all_frames[0]
-      out_path = (args.colmap_out.resolve() if args.colmap_out else (reference_frame / "transforms.json"))
-      os.makedirs(out_path.parent, exist_ok=True)
-      text_folder = reference_frame / "sparse"
-      os.makedirs(text_folder, exist_ok=True)
-
-      colmap_cmd = [
-         sys.executable, str(instant_root / "scripts/colmap2nerf.py"),
-         "--colmap_db", str(reference_frame / "database.db"),
-         "--text", str(text_folder),
-         "--images", str(reference_frame),
-         "--out", str(out_path),
-         "--run_colmap", "--overwrite"
-      ]
-      if args.aabb_scale: colmap_cmd += ["--aabb_scale", str(args.aabb_scale)]
-      if args.multi_camera:    colmap_cmd += ["--multi_camera"]
-      if args.mask_categories: colmap_cmd += ["--mask_categories"] + list(args.mask_categories)
-
-
-      if not args.skip_colmap:
-         logger.info(f"Running colmap2nerf.py using reference frame: {reference_frame.name}")
-         run(colmap_cmd, cwd=instant_root)
-      else:
-         logger.info(f"Skipping colmap. Assuming transforms.json exists at: {out_path}")
-
-      if not out_path.exists():
-         logger.error(f"FATAL: transforms.json not found at {out_path} after colmap stage.")
-         sys.exit(1)
-
-      # --- Training Stage ---
-      target_dataset_transform = dataset_root / "transforms.json"
-      shutil.copy2(out_path, target_dataset_transform)
-      logger.info(f"Copied {out_path} -> {target_dataset_transform}")
-
-      for frame in all_frames:  # Copy to all frames for reference
-         if frame / "transforms.json" != out_path:
-         	shutil.copy2(out_path, frame / "transforms.json")
-
-      cur_step = 0
-      prev_snapshot = None
-      for idx, frame in enumerate(training_frames):
-         frame_start_time = time.time()
-         logger.info(f"--- Training frame {frame.name} ({idx + 1}/{len(training_frames)}) ---")
-         fix_transforms_paths(frame / "transforms.json", frame, overwrite=True)
-
-         snapshot_path = frame / f"snapshot_{frame.name}.msgpack"
-         is_first_ever_frame = (idx == 0) # Check index in the filtered list, not against all_frames
-         steps_to_go = args.first_step_n_steps if is_first_ever_frame else args.following_n_steps
-         #cur_step += steps_to_go  # --n_steps
-         resume_step = args.first_step_n_steps - args.following_n_steps
-		 # Note on schedule of LR:
-		 #After **20,000 steps (decay_start)**, the base learning rate of **1e-2** begins to decay — every
-		 # **10,000 steps (decay_interval)** it is multiplied by **0.33 (decay_base)**.
-		 # Before reaching 20,000 steps, the original learning rate (1e-2) is used.
-
-         run_cmd = [
+        run_cmd = [
             sys.executable, str(instant_root / "scripts/run-ngp-aina.py"),
             "--scene", str(frame),
             "--save_snapshot", str(snapshot_path),
-            "--n_steps", str(steps_to_go), # was cur_step
-			"--override_training_step", str(resume_step) # will start from this stem
-         ]
-         if not is_first_ever_frame and prev_snapshot:
+            "--n_steps", str(steps_to_go),
+            "--override_training_step", str(resume_step),
+        ]
+        if idx > 0 and prev_snapshot:
             run_cmd += ["--load_snapshot", str(prev_snapshot)]
-         if extra_args:
-            run_cmd += extra_args
+        if extra_args:
+            run_cmd += list(extra_args)
 
-         run(run_cmd, cwd=instant_root)
-         prev_snapshot = snapshot_path
+        run(run_cmd, cwd=instant_root)
+        prev_snapshot = snapshot_path
+        logger.info("Finished training for %s in %.2f s", frame.name, time.time() - frame_start)
 
-         frame_duration = time.time() - frame_start_time
-         logger.info(f"Finished training for {frame.name}. Took {frame_duration:.2f} seconds.")
 
-   else:
-      logger.info("--- Render-only mode enabled. Skipping all COLMAP and training steps. ---")
+def resolve_snapshot(frame_snap_dir: Path, frame_name: str) -> Path:
+    """Return first existing snapshot file for given frame; raise if missing."""
+    for ext in (".msgpack", ".ingp"):
+        p = frame_snap_dir / f"snapshot_{frame_name}{ext}"
+        if p.exists():
+            return p
+    raise FileNotFoundError(f"Snapshot not found for frame '{frame_name}' in {frame_snap_dir}")
 
-   # --- Rendering Stage ---
-   if args.render_after_train or args.render_only:
-      if not args.render_camera_path:
-         logger.error("Rendering requested but --render_camera_path is missing.")
-         sys.exit(1)
-      if not args.render_camera_path.exists():
-         logger.error(f"Camera path file not found: {args.render_camera_path}")
-         sys.exit(1)
 
-      rendering_frames = all_frames
-      if args.render_start_frame is not None or args.render_end_frame is not None:
-         logger.info(f"Filtering rendering frames for range: [{args.render_start_frame}, {args.render_end_frame}]")
-         filtered = []
-         for frame in all_frames:
-            try:
-               frame_num = int(frame.name)
-               if args.render_start_frame is not None and frame_num < args.render_start_frame: continue
-               if args.render_end_frame is not None and frame_num > args.render_end_frame: continue
-               filtered.append(frame)
-            except ValueError:
-               logger.warning(f"Skipping non-integer frame name '{frame.name}' during render filtering.")
-         rendering_frames = filtered
+def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames: list[Path], fps: int,
+                          output_path: Path, snapshots_root: Path, keep_frames: bool, extra_args: list[str],
+                          aabb_rendering: list[str], ffmpeg_path: str, keep_temp_dir: bool):
+    """Render each trained snapshot into a frame and combine into a final video.
 
-      if not rendering_frames:
-         logger.error("No frames matched the specified render frame filter. Nothing to render.")
-         sys.exit(1)
+    Creates (or reuses) snapshots_root/tmp_render/ for PNG frames, then stitches
+    them with ffmpeg into the final video.
+    """
+    logger = logging.getLogger()
+    tmp_dir = snapshots_root / "tmp_render"
 
-      logger.info(f"Found {len(rendering_frames)} frames to render.")
+    # Recreate tmp render dir unless explicitly told to keep it
+    if tmp_dir.exists() and not keep_temp_dir:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
 
-      final_output = args.render_output.resolve() if args.render_output else (dataset_root / "combined.mp4")
-      tmp_dir = (args.render_tmpdir.resolve() if args.render_tmpdir else (dataset_root / "tmp_render"))
-      tmp_dir = Path(tmp_dir)
-      seq_frames = build_sequence(rendering_frames, palindrome=args.render_palindrome)
-      logger.info(f"Rendering a video from {len(seq_frames)} total frames/models.")
+    total_frames_in_sequence = len(sequence_frames)
+    logger.info("Preparing to render %d individual frames to create the final video.", total_frames_in_sequence)
 
-      render_combined_video(
-         instant_root=instant_root,
-         camera_path=args.render_camera_path.resolve(),
-         sequence_frames=seq_frames,
-         fps=args.render_fps,
-         output_path=final_output,
-         tmp_dir=tmp_dir,
-         keep_frames=args.render_keep_frames,
-         extra_args=(args.render_extra_args or [])
-      )
-      logger.info(f"Combined video saved to: {final_output}")
+    for i, frame in enumerate(sequence_frames):
+        render_start = time.time()
+        frame_snap_dir = snapshots_root / frame.name
+        snapshot = resolve_snapshot(frame_snap_dir, frame.name)
 
-   logger.info("Script finished successfully.")
+        temp_output_pattern = tmp_dir / "render_%04d.png"
+        video_duration = len(sequence_frames)  # 1s per model
+        frames_per_segment = fps
+        start_frame = frames_per_segment * i
+        end_frame = frames_per_segment * (i + 1)
+
+        render_cmd = [
+            sys.executable,
+            str(instant_root / "scripts/run-ngp-aina.py"),
+            "--scene", str(frame),
+            "--load_snapshot", str(snapshot),
+            "--video_camera_path", str(camera_path),
+            "--video_fps", str(fps),
+            "--video_n_seconds", str(video_duration),
+            "--video_render_range", str(start_frame), str(end_frame),
+            "--video_output", str(temp_output_pattern),
+        ]
+
+        if aabb_rendering is not None:
+            render_cmd += ["--aabb", *map(str, aabb_rendering)]
+
+        if extra_args:
+            render_cmd += list(extra_args)
+
+        logger.info("Rendering frame %d/%d using model from %s", i + 1, total_frames_in_sequence, frame.name)
+        run(render_cmd, cwd=instant_root)
+        logger.info("Frame %d rendered in %.2f s", i + 1, time.time() - render_start)
+
+    logger.info("Stitching frames into final video: %s", output_path)
+    ffmpeg_cmd = [
+        ffmpeg_path, "-y",
+        "-framerate", str(fps),
+        "-i", str(tmp_dir / "render_%04d.png"),
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        str(output_path),
+    ]
+    run(ffmpeg_cmd)
+
+    if not keep_frames:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            logger.warning("Could not remove temporary directory %s", tmp_dir)
+
+
+def parse_args():
+    """Define and parse CLI arguments for the script."""
+    p = argparse.ArgumentParser(description="Train Instant-NGP per-frame and optionally render combined video.")
+
+    # Core
+    p.add_argument("dataset_root", type=Path, help="Root directory with frame subdirectories")
+    p.add_argument("--instant_root", type=Path, default=Path.cwd(), help="Path to instant-ngp repo root")
+    p.add_argument("--snapshots_root", type=Path, required=True,
+                   help="Directory to store per-frame snapshots (subfolder per frame) and tmp_render/")
+
+    # Training
+    p.add_argument("--first_step_n_steps", type=int, default=40000)
+    p.add_argument("--following_n_steps", type=int, default=15000)
+    p.add_argument("--start_frame", type=int, default=None)
+    p.add_argument("--end_frame", type=int, default=None)
+
+    # COLMAP
+    p.add_argument("--aabb_scale", type=int)
+    p.add_argument("--mask_categories", nargs="*")
+    p.add_argument("--colmap_out", type=Path, help="Where to write transforms.json (default: first frame folder)")
+    p.add_argument("--skip_colmap", action="store_true")
+    p.add_argument("--multi_camera", action="store_true",
+                   help="Forward to colmap2nerf.py to allow multiple cameras (different resolutions).")
+
+    # Rendering
+    p.add_argument("--render_only", action="store_true")
+    p.add_argument("--render_after_train", action="store_true")
+    p.add_argument("--render_camera_path", type=Path)
+    p.add_argument("--render_start_frame", type=int, default=None)
+    p.add_argument("--render_end_frame", type=int, default=None)
+    p.add_argument("--render_fps", type=int, default=30)
+    p.add_argument("--render_palindrome", action="store_true")
+    p.add_argument("--render_output", type=Path, default=None)
+    p.add_argument("--render_keep_frames", action="store_true")
+    p.add_argument("--render_extra_args", nargs="*")
+
+    # Rendering region (instead of hardcoded AABB)
+    p.add_argument(
+		"--aabb_rendering",
+		nargs=6,
+		type=str,
+		default=None,
+		metavar=('minx', 'miny', 'minz', 'maxx', 'maxy', 'maxz'),
+		help="AABB values for rendering region."
+	)
+
+
+# ffmpeg binary path override
+    p.add_argument("--ffmpeg_path", type=str, default=None,
+                   help="Custom path to ffmpeg binary; defaults to 'ffmpeg' in PATH.")
+
+    # Keep tmp_render/ between runs
+    p.add_argument("--keep_temp_dir", action="store_true",
+                   help="Keep temporary render directory instead of recreating.")
+
+    args, extra = p.parse_known_args()
+    return args, extra
+
+
+def filter_frames(all_frames: list[Path], start_frame: int | None, end_frame: int | None, purpose: str) -> list[Path]:
+    """Filter frame directories by numeric name range (inclusive)."""
+    logger = logging.getLogger()
+    if start_frame is None and end_frame is None:
+        return all_frames
+    logger.info("Filtering %s frames for range: [%s, %s]", purpose, start_frame, end_frame)
+    filtered = []
+    for frame in all_frames:
+        try:
+            num = int(frame.name)
+            if start_frame is not None and num < start_frame:
+                continue
+            if end_frame is not None and num > end_frame:
+                continue
+            filtered.append(frame)
+        except ValueError:
+            logger.warning("Skipping non-integer frame name '%s' during %s filter", frame.name, purpose)
+    return filtered
+
+
+def main():
+    """Entry point: orchestrates COLMAP (optional), training, and rendering."""
+    args, extra_args = parse_args()
+
+    dataset_root = args.dataset_root.resolve()
+    instant_root = args.instant_root.resolve()
+    snapshots_root = args.snapshots_root.resolve()
+
+    # init logging (overwrites previous log file)
+    log_file_path = dataset_root / "training_log.txt"
+    logger = configure_logging(log_file_path)
+    logger.info("--- Starting new script run ---")
+
+    if not dataset_root.is_dir():
+        logger.error("Dataset root does not exist or is not a directory: %s", dataset_root)
+        sys.exit(1)
+
+    all_frames = try_int_sort([d for d in dataset_root.iterdir() if d.is_dir()])
+    if not all_frames:
+        logger.error("No frame subdirectories found in dataset_root")
+        sys.exit(1)
+
+    # COLMAP + TRAIN unless render-only
+    if not args.render_only:
+        training_frames = filter_frames(all_frames, args.start_frame, args.end_frame, "training")
+        if not training_frames:
+            logger.error("No frames matched the specified --start_frame/--end_frame filter. Nothing to train.")
+            sys.exit(1)
+        logger.info("Found %d frames to train out of %d total.", len(training_frames), len(all_frames))
+
+        reference_frame = all_frames[0]
+        out_path = (args.colmap_out.resolve() if args.colmap_out else (reference_frame / "transforms.json"))
+        run_colmap(
+            instant_root=instant_root,
+            reference_frame=reference_frame,
+            out_path=out_path,
+            aabb_scale=args.aabb_scale,
+            multi_camera=args.multi_camera,
+            mask_categories=args.mask_categories,
+            skip_colmap=args.skip_colmap,
+        )
+
+        copy_transforms_to_all(out_path, dataset_root, all_frames)
+
+        snapshots_root.mkdir(parents=True, exist_ok=True)
+        train_frames(
+            instant_root=instant_root,
+            training_frames=training_frames,
+            first_steps=args.first_step_n_steps,
+            follow_steps=args.following_n_steps,
+            snapshots_root=snapshots_root,
+            extra_args=(args.render_extra_args or []),
+        )
+    else:
+        logger.info("--- Render-only mode enabled. Skipping COLMAP and training. ---")
+
+    # Rendering stage
+    if args.render_after_train or args.render_only:
+        if not args.render_camera_path:
+            logger.error("Rendering requested but --render_camera_path is missing.")
+            sys.exit(1)
+        if not args.render_camera_path.exists():
+            logger.error("Camera path file not found: %s", args.render_camera_path)
+            sys.exit(1)
+
+        rendering_frames = filter_frames(all_frames, args.render_start_frame, args.render_end_frame, "render")
+        if not rendering_frames:
+            logger.error("No frames matched the specified render frame filter. Nothing to render.")
+            sys.exit(1)
+
+        logger.info("Found %d frames to render.", len(rendering_frames))
+        final_output = args.render_output.resolve() if args.render_output else (dataset_root / "combined.mp4")
+        seq_frames = build_sequence(rendering_frames, palindrome=args.render_palindrome)
+        logger.info("Rendering a video from %d total frames/models.", len(seq_frames))
+
+        ffmpeg_path = args.ffmpeg_path if args.ffmpeg_path else "ffmpeg"
+        render_combined_video(
+            instant_root=instant_root,
+            camera_path=args.render_camera_path.resolve(),
+            sequence_frames=seq_frames,
+            fps=args.render_fps,
+            output_path=final_output,
+            snapshots_root=snapshots_root,
+            keep_frames=args.render_keep_frames,
+            extra_args=(args.render_extra_args or []),
+            aabb_rendering=args.aabb_rendering,
+            ffmpeg_path=ffmpeg_path,
+            keep_temp_dir=args.keep_temp_dir,
+        )
+        logger.info("Combined video saved to: %s", final_output)
+
+    logger.info("Script finished successfully.")
 
 
 if __name__ == "__main__":
-   main()
+    main()

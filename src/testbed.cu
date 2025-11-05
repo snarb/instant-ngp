@@ -449,6 +449,11 @@ void Testbed::set_scale(float scale) {
 	m_scale = scale;
 }
 
+void Testbed::set_training_step(uint32_t step) {
+	m_training_step = step;
+	m_training_start_time_point = std::chrono::steady_clock::now();
+}
+
 void Testbed::set_view_dir(const vec3& dir) {
 	auto old_look_at = look_at();
 	m_camera[0] = normalize(cross(dir, m_up_dir));
