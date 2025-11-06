@@ -228,7 +228,7 @@ def train_frames(instant_root: Path, training_frames: list[Path], first_steps: i
         if idx > 0 and prev_snapshot:
             run_cmd += ["--load_snapshot", str(prev_snapshot)]
         if extra_args:
-            run_cmd += list(extra_args)
+            run_cmd += list(extra_args) #prev_snapshot = '/fsx/Test_Prism_new/Walking1/cropped_jpgs/sequence1/seqA1/snapshots/000149/snapshot_000149.msgpack'
 
         run(run_cmd, cwd=instant_root)
         prev_snapshot = snapshot_path
