@@ -450,6 +450,8 @@ public:
 	void set_look_at(const vec3& pos);
 	float scale() const { return m_scale; }
 	void set_scale(float scale);
+	uint32_t training_step() const { return m_training_step; }
+	void set_training_step(uint32_t step);
 	vec3 view_pos() const { return m_camera[3]; }
 	vec3 view_dir() const { return m_camera[2]; }
 	vec3 view_up() const { return m_camera[1]; }

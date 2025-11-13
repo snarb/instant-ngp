@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-Instant-NGP per-frame training and rendering automation.
-
-This script automates:
-1. Running COLMAP once on a reference frame to generate transforms.json.
-2. Training each frame sequentially, saving per-frame snapshots.
-3. Rendering a combined video sequence using the trained snapshots.
-
-Features:
-- Recreates logs on each run.
-- Stores snapshots per-frame in a specified root.
-- Optional rendering with configurable AABB and ffmpeg path.
-- Can preserve or clean temporary render directories.
-
-Author: Pavlo Konovalov
-Refactored by ChatGPT (GPT-5)
-"""
 
 from __future__ import annotations
 import sys

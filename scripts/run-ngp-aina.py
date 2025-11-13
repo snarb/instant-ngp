@@ -79,7 +79,11 @@ def parse_args():
 		help="Axis-aligned bounding box (min_x, min_y, min_z, max_x, max_y, max_z)"
 	)
 	parser.add_argument("--ffmpeg_path", default="", help="Path to ffmpeg executable. If not specified, uses system-wide ffmpeg.")
-
+	parser.add_argument("--override_training_step",
+		type=int,
+		default=None,
+		help="Set the training step after loading a snapshot. Useful for resuming with a different scheduler state."
+	)
 	return parser.parse_args()
 
 def get_scene(scene):
@@ -136,6 +140,11 @@ if __name__ == "__main__":
 		testbed.load_snapshot(args.load_snapshot)
 	elif args.network:
 		testbed.reload_network_from_file(args.network)
+
+	if args.override_training_step is not None:
+		if args.override_training_step < 0:
+			raise ValueError("--override_training_step must be non-negative")
+		testbed.training_step = args.override_training_step
 
 	ref_transforms = {}
 	if args.screenshot_transforms: # try to load the given file straight away
@@ -376,6 +385,7 @@ if __name__ == "__main__":
 
 		resolution = [args.width or 1920, args.height or 1080]
 		save_frames = "%" in args.video_output
+
 		start_frame, end_frame = args.video_render_range
 		#n_frames = end_frame - start_frame
 		n_frames = args.video_n_seconds * args.video_fps
@@ -408,4 +418,5 @@ if __name__ == "__main__":
 		if not save_frames:
 			os.system(f"{ffmpeg_path} -y -framerate {args.video_fps} -i tmp/%04d.jpg -c:v libx264 -pix_fmt yuv420p {args.video_output}")
 
-		shutil.rmtree("tmp")
+		if "tmp" in os.listdir():
+			shutil.rmtree("tmp")
