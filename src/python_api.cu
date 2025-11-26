@@ -442,41 +442,42 @@ PYBIND11_MODULE(pyngp, m) {
 		return py::array{sizeof(o.params) / sizeof(o.params[0]), o.params, obj};
 	});
 
-	py::class_<fs::path>(m, "path").def(py::init<>()).def(py::init<const std::string&>());
+        py::class_<fs::path>(m, "path").def(py::init<>()).def(py::init<const std::string&>());
 
-	py::implicitly_convertible<std::string, fs::path>();
+        py::implicitly_convertible<std::string, fs::path>();
 
-	py::class_<Testbed> testbed(m, "Testbed");
-	testbed.def(py::init<ETestbedMode>(), py::arg("mode") = ETestbedMode::None)
-		.def(py::init<ETestbedMode, const fs::path&, const fs::path&>())
-		.def(py::init<ETestbedMode, const fs::path&, const json&>())
-		.def_readonly("mode", &Testbed::m_testbed_mode)
-		.def(
-			"create_empty_nerf_dataset",
-			&Testbed::create_empty_nerf_dataset,
-			"Allocate memory for a nerf dataset with a given size",
-			py::arg("n_images"),
-			py::arg("aabb_scale") = 1,
-			py::arg("is_hdr") = false
-		)
-		.def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
-		.def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
-		// General control
-		.def(
-			"init_window",
-			&Testbed::init_window,
-			"Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window.",
-			py::arg("width"),
-			py::arg("height"),
-			py::arg("hidden") = false,
-			py::arg("second_window") = false
-		)
-		.def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
-		.def(
-			"init_vr",
-			&Testbed::init_vr,
-			"Init rendering to a connected and active VR headset. Requires a window to have been previously created via `init_window`."
-		)
+        py::class_<Testbed> testbed(m, "Testbed");
+        testbed.def(py::init<ETestbedMode>(), py::arg("mode") = ETestbedMode::None)
+                .def(py::init<ETestbedMode, const fs::path&, const fs::path&>())
+                .def(py::init<ETestbedMode, const fs::path&, const json&>())
+                .def_readonly("mode", &Testbed::m_testbed_mode)
+                .def_readwrite("max_spp", &Testbed::m_max_spp, "Maximum samples per pixel before rendering is skipped.")
+                .def(
+                        "create_empty_nerf_dataset",
+                        &Testbed::create_empty_nerf_dataset,
+                        "Allocate memory for a nerf dataset with a given size",
+                        py::arg("n_images"),
+                        py::arg("aabb_scale") = 1,
+                        py::arg("is_hdr") = false
+                )
+                .def("load_training_data", &Testbed::load_training_data, py::call_guard<py::gil_scoped_release>(), "Load training data from a given path.")
+                .def("clear_training_data", &Testbed::clear_training_data, "Clears training data to free up GPU memory.")
+                // General control
+                .def(
+                        "init_window",
+                        &Testbed::init_window,
+                        "Init a GLFW window that shows real-time progress and a GUI. 'second_window' creates a second copy of the output in its own window.",
+                        py::arg("width"),
+                        py::arg("height"),
+                        py::arg("hidden") = false,
+                        py::arg("second_window") = false
+                )
+                .def("destroy_window", &Testbed::destroy_window, "Destroy the window again.")
+                .def(
+                        "init_vr",
+                        &Testbed::init_vr,
+                        "Init rendering to a connected and active VR headset. Requires a window to have been previously created via `init_window`."
+                )
 		.def(
 			"view",
 			&Testbed::view,
@@ -526,23 +527,29 @@ PYBIND11_MODULE(pyngp, m) {
 			py::arg("end_t") = -1.f,
 			py::arg("fps") = 30.f,
 			py::arg("shutter_fraction") = 1.0f
-		)
-		.def(
-			"render_with_depth",
-			&Testbed::render_to_cpu,
-			"Renders an image at the requested resolution. Does not require a window.",
-			py::arg("width") = 1920,
-			py::arg("height") = 1080,
-			py::arg("spp") = 1,
-			py::arg("linear") = true,
-			py::arg("start_t") = -1.f,
-			py::arg("end_t") = -1.f,
-			py::arg("fps") = 30.f,
-			py::arg("shutter_fraction") = 1.0f
-		)
-		.def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
-		.def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
-		.def("reset_camera", &Testbed::reset_camera, "Reset camera to default state.")
+                )
+                .def(
+                        "render_with_depth",
+                        &Testbed::render_to_cpu,
+                        "Renders an image at the requested resolution. Does not require a window.",
+                        py::arg("width") = 1920,
+                        py::arg("height") = 1080,
+                        py::arg("spp") = 1,
+                        py::arg("linear") = true,
+                        py::arg("start_t") = -1.f,
+                        py::arg("end_t") = -1.f,
+                        py::arg("fps") = 30.f,
+                        py::arg("shutter_fraction") = 1.0f
+                )
+                .def("train", &Testbed::train, py::call_guard<py::gil_scoped_release>(), "Perform a single training step with a specified batch size.")
+                .def("reset", &Testbed::reset_network, py::arg("reset_density_grid") = true, "Reset training.")
+                .def("reset_camera", &Testbed::reset_camera, "Reset camera to default state.")
+                .def(
+                        "set_camera_from_time",
+                        &Testbed::set_camera_from_time,
+                        "Set the camera to the pose at time t on the currently loaded camera path.",
+                        py::arg("t")
+                )
 		.def(
 			"reset_accumulation",
 			&Testbed::reset_accumulation,

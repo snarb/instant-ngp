@@ -3950,7 +3950,7 @@ bool Testbed::frame() {
 	}
 	bool skip_rendering = m_render_skip_due_to_lack_of_camera_movement_counter++ != 0;
 
-	if (!m_dlss && m_max_spp > 0 && !m_views.empty() && m_views.front().render_buffer->spp() >= m_max_spp) {
+if (m_max_spp > 0 && !m_views.empty() && m_views.front().render_buffer->spp() >= m_max_spp) {
 		skip_rendering = true;
 		if (!m_train) {
 			std::this_thread::sleep_for(1ms);

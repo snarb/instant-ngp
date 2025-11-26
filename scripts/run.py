@@ -97,6 +97,12 @@ if __name__ == "__main__":
 	if args.vr: # VR implies having the GUI running at the moment
 		args.gui = True
 
+	ref_transforms = {}
+	if args.screenshot_transforms: # try to load the given file straight away
+		print("Screenshot transforms from ", args.screenshot_transforms)
+		with open(args.screenshot_transforms) as f:
+			ref_transforms = json.load(f)
+
 	if args.mode:
 		print("Warning: the '--mode' argument is no longer in use. It has no effect. The mode is automatically chosen based on the scene.")
 
@@ -121,11 +127,22 @@ if __name__ == "__main__":
 	if args.dlss_mode != "auto":
 		args.dlss = True
 
+	def resolve_output_resolution(default_w=1920, default_h=1080):
+		width = args.width or 0
+		height = args.height or 0
+
+		if ref_transforms:
+			width = width or int(ref_transforms.get("w", 0))
+			height = height or int(ref_transforms.get("h", 0))
+
+		return width or default_w, height or default_h
+
+	window_resolution = resolve_output_resolution()
+
 	need_window = args.gui or args.dlss
 	if need_window:
 		# Pick a sensible GUI resolution depending on arguments.
-		sw = args.width or 1920
-		sh = args.height or 1080
+		sw, sh = window_resolution
 		while sw * sh > 1920 * 1080 * 4:
 			sw = int(sw / 2)
 			sh = int(sh / 2)
@@ -144,12 +161,6 @@ if __name__ == "__main__":
 		testbed.load_snapshot(args.load_snapshot)
 	elif args.network:
 		testbed.reload_network_from_file(args.network)
-
-	ref_transforms = {}
-	if args.screenshot_transforms: # try to load the given file straight away
-		print("Screenshot transforms from ", args.screenshot_transforms)
-		with open(args.screenshot_transforms) as f:
-			ref_transforms = json.load(f)
 
 	if testbed.mode == ngp.TestbedMode.Sdf:
 		testbed.tonemap_curve = ngp.TonemapCurve.ACES
@@ -178,11 +189,40 @@ if __name__ == "__main__":
 			) from exc
 
 	if args.dlss_sharpening is not None:
-                testbed.dlss_sharpening = max(0.0, min(1.0, float(args.dlss_sharpening)))
+		testbed.dlss_sharpening = max(0.0, min(1.0, float(args.dlss_sharpening)))
 
 	testbed.nerf.sharpen = float(args.sharpen)
 	testbed.exposure = args.exposure
 	testbed.shall_train = args.train if args.gui else True
+
+	def render_with_dlss_capture(width, height, spp, linear=True, start_t=-1.0, end_t=-1.0, fps=30.0, shutter_fraction=1.0):
+		if not args.dlss:
+			return testbed.render(width, height, spp, linear, start_t, end_t, fps, shutter_fraction)
+
+		target_w, target_h = window_resolution
+		if width and height and (width != target_w or height != target_h):
+			raise RuntimeError(
+				"DLSS captures rely on the GLFW window. Set --width/--height (or the transforms JSON dimensions) to the desired output resolution before enabling DLSS."
+			)
+
+		previous_max_spp = testbed.max_spp
+		try:
+			testbed.max_spp = spp
+			testbed.reset_accumulation()
+			if start_t >= 0.0:
+				testbed.set_camera_from_time(start_t)
+
+			for sample in range(max(1, spp)):
+				if start_t >= 0.0 and end_t >= 0.0:
+					start_alpha = float(sample) / float(spp) * shutter_fraction
+					end_alpha = float(sample + 1) / float(spp) * shutter_fraction
+					testbed.set_camera_from_time(start_t + (end_t - start_t) * (start_alpha + end_alpha) / 2.0)
+
+				testbed.frame()
+
+			return np.array(testbed.screenshot(linear=linear, front_buffer=True))
+		finally:
+			testbed.max_spp = previous_max_spp
 
 
 	network_stem = os.path.splitext(os.path.basename(args.network))[0] if args.network else "base"
@@ -328,9 +368,9 @@ if __name__ == "__main__":
 				resolution = testbed.nerf.training.dataset.metadata[i].resolution
 				testbed.render_ground_truth = True
 				testbed.set_camera_to_training_view(i)
-				ref_image = testbed.render(resolution[0], resolution[1], 1, True)
+				ref_image = render_with_dlss_capture(resolution[0], resolution[1], 1, True)
 				testbed.render_ground_truth = False
-				image = testbed.render(resolution[0], resolution[1], spp, True)
+				image = render_with_dlss_capture(resolution[0], resolution[1], spp, True)
 
 				if i == 0:
 					write_image(f"ref.png", ref_image)
@@ -389,13 +429,13 @@ if __name__ == "__main__":
 				outname = outname + ".png"
 
 			print(f"rendering {outname}")
-			image = testbed.render(args.width or int(ref_transforms["w"]), args.height or int(ref_transforms["h"]), args.screenshot_spp, True)
+			image = render_with_dlss_capture(args.width or int(ref_transforms["w"]), args.height or int(ref_transforms["h"]), args.screenshot_spp, True)
 			os.makedirs(os.path.dirname(outname), exist_ok=True)
 			write_image(outname, image)
 	elif args.screenshot_dir:
 		outname = os.path.join(args.screenshot_dir, args.scene + "_" + network_stem)
 		print(f"Rendering {outname}.png")
-		image = testbed.render(args.width or 1920, args.height or 1080, args.screenshot_spp, True)
+		image = render_with_dlss_capture(args.width or 1920, args.height or 1080, args.screenshot_spp, True)
 		if os.path.dirname(outname) != "":
 			os.makedirs(os.path.dirname(outname), exist_ok=True)
 		write_image(outname + ".png", image)
@@ -420,12 +460,11 @@ if __name__ == "__main__":
 				# from middle of the sequence. Instead we render a very small image and discard it
 				# for these initial frames.
 				# TODO Replace this with a no-op render method once it's available
-				frame = testbed.render(32, 32, 1, True, float(i)/n_frames, float(i + 1)/n_frames, args.video_fps, shutter_fraction=0.5)
-				continue
+				frame = render_with_dlss_capture(32, 32, 1, True, float(i)/n_frames, float(i + 1)/n_frames, args.video_fps, shutter_fraction=0.5)
 			elif end_frame >= 0 and i > end_frame:
 				continue
 
-			frame = testbed.render(resolution[0], resolution[1], args.video_spp, True, float(i)/n_frames, float(i + 1)/n_frames, args.video_fps, shutter_fraction=0.5)
+			frame = render_with_dlss_capture(resolution[0], resolution[1], args.video_spp, True, float(i)/n_frames, float(i + 1)/n_frames, args.video_fps, shutter_fraction=0.5)
 			if save_frames:
 				write_image(args.video_output % i, np.clip(frame * 2**args.exposure, 0.0, 1.0), quality=100)
 			else:
