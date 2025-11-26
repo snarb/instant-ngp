@@ -18,6 +18,7 @@
 #include <tiny-cuda-nn/common_host.h>
 
 #include <filesystem/path.h>
+#include <optional>
 
 #if !defined(NGP_VULKAN) || !defined(NGP_GUI)
 static_assert(false, "DLSS can only be compiled when both Vulkan and GUI support is enabled.")
@@ -29,6 +30,9 @@ static_assert(false, "DLSS can only be compiled when both Vulkan and GUI support
 #  include <GL/glew.h>
 #endif
 #include <GLFW/glfw3.h>
+
+#include <algorithm>
+#include <fmt/format.h>
 
 #ifdef _WIN32
 #  include <vulkan/vulkan_win32.h>
@@ -877,14 +881,20 @@ private:
 };
 
 NVSDK_NGX_PerfQuality_Value ngx_dlss_quality(EDlssQuality quality) {
-	switch (quality) {
-		case EDlssQuality::UltraPerformance: return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
-		case EDlssQuality::MaxPerformance: return NVSDK_NGX_PerfQuality_Value_MaxPerf;
-		case EDlssQuality::Balanced: return NVSDK_NGX_PerfQuality_Value_Balanced;
-		case EDlssQuality::MaxQuality: return NVSDK_NGX_PerfQuality_Value_MaxQuality;
-		case EDlssQuality::UltraQuality: return NVSDK_NGX_PerfQuality_Value_UltraQuality;
-		default: throw std::runtime_error{"Unknown DLSS quality setting."};
-	}
+        switch (quality) {
+                case EDlssQuality::UltraPerformance: return NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+                case EDlssQuality::MaxPerformance: return NVSDK_NGX_PerfQuality_Value_MaxPerf;
+                case EDlssQuality::Balanced: return NVSDK_NGX_PerfQuality_Value_Balanced;
+                case EDlssQuality::MaxQuality: return NVSDK_NGX_PerfQuality_Value_MaxQuality;
+                case EDlssQuality::UltraQuality: return NVSDK_NGX_PerfQuality_Value_UltraQuality;
+#ifdef NVSDK_NGX_PerfQuality_Value_DLAA
+                case EDlssQuality::DLAA: return NVSDK_NGX_PerfQuality_Value_DLAA;
+#else
+                case EDlssQuality::DLAA:
+                        throw std::runtime_error{"DLAA requires an NGX SDK that exposes NVSDK_NGX_PerfQuality_Value_DLAA."};
+#endif
+                default: throw std::runtime_error{"Unknown DLSS quality setting."};
+        }
 }
 
 struct DlssFeatureSpecs {
@@ -1047,9 +1057,9 @@ private:
 
 class Dlss : public IDlss {
 public:
-	Dlss(std::shared_ptr<VulkanAndNgx> vk_and_ngx, const ivec2& max_out_resolution)
-	:
-	m_vk_and_ngx{vk_and_ngx},
+        Dlss(std::shared_ptr<VulkanAndNgx> vk_and_ngx, const ivec2& max_out_resolution)
+        :
+        m_vk_and_ngx{vk_and_ngx},
 	m_max_out_resolution{max_out_resolution},
 	// Allocate all buffers at output resolution and use dynamic sub-rects
 	// to use subsets of them. This avoids re-allocations when using DLSS
@@ -1102,26 +1112,49 @@ public:
 		m_dlss_feature = nullptr;
 	}
 
-	void update_feature(const ivec2& in_resolution, bool is_hdr, bool sharpen) override {
-		CUDA_CHECK_THROW(cudaDeviceSynchronize());
+        void update_feature(const ivec2& in_resolution, bool is_hdr, bool sharpen) override {
+                CUDA_CHECK_THROW(cudaDeviceSynchronize());
 
-		DlssFeatureSpecs specs;
-		bool found = false;
-		for (const auto& s : m_dlss_specs) {
-			if (s.distance(in_resolution) == 0.0f) {
-				specs = s;
-				found = true;
-			}
-		}
+                DlssFeatureSpecs specs;
+                bool found = false;
+                auto matches_resolution = [&](const DlssFeatureSpecs& s) {
+                        return s.distance(in_resolution) == 0.0f;
+                };
 
-		if (!found) {
-			throw std::runtime_error{"Dlss::run called with invalid input resolution."};
-		}
+                if (m_forced_quality) {
+                        for (const auto& s : m_dlss_specs) {
+                                if (s.quality == *m_forced_quality && matches_resolution(s)) {
+                                        specs = s;
+                                        found = true;
+                                        break;
+                                }
+                        }
 
-		if (!m_dlss_feature || m_dlss_feature->is_hdr() != is_hdr || m_dlss_feature->sharpen() != sharpen || m_dlss_feature->quality() != specs.quality || m_dlss_feature->out_resolution() != specs.out_resolution) {
-			m_dlss_feature.reset(new DlssFeature{m_vk_and_ngx, specs.out_resolution, is_hdr, sharpen, specs.quality});
-		}
-	}
+                        if (!found) {
+                                throw std::runtime_error{fmt::format(
+                                        "DLSS quality '{}' cannot run at {}x{} input.",
+                                        DlssQualityStrArray[(int)*m_forced_quality],
+                                        in_resolution.x,
+                                        in_resolution.y
+                                )};
+                        }
+                } else {
+                        for (const auto& s : m_dlss_specs) {
+                                if (matches_resolution(s)) {
+                                        specs = s;
+                                        found = true;
+                                }
+                        }
+                }
+
+                if (!found) {
+                        throw std::runtime_error{"Dlss::run called with invalid input resolution."};
+                }
+
+                if (!m_dlss_feature || m_dlss_feature->is_hdr() != is_hdr || m_dlss_feature->sharpen() != sharpen || m_dlss_feature->quality() != specs.quality || m_dlss_feature->out_resolution() != specs.out_resolution) {
+                        m_dlss_feature.reset(new DlssFeature{m_vk_and_ngx, specs.out_resolution, is_hdr, sharpen, specs.quality});
+                }
+        }
 
 	void run(
 		const ivec2& in_resolution,
@@ -1193,27 +1226,55 @@ public:
 		return m_dlss_feature && m_dlss_feature->is_hdr();
 	}
 
-	bool sharpen() const override {
-		return m_dlss_feature && m_dlss_feature->sharpen();
-	}
+        bool sharpen() const override {
+                return m_dlss_feature && m_dlss_feature->sharpen();
+        }
 
-	EDlssQuality quality() const override {
-		return m_dlss_feature ? m_dlss_feature->quality() : EDlssQuality::None;
-	}
+        EDlssQuality quality() const override {
+                return m_dlss_feature ? m_dlss_feature->quality() : EDlssQuality::None;
+        }
+
+        std::vector<EDlssQuality> supported_qualities() const override {
+                std::vector<EDlssQuality> result;
+                for (const auto& specs : m_dlss_specs) {
+                        if (std::find(result.begin(), result.end(), specs.quality) == result.end()) {
+                                result.push_back(specs.quality);
+                        }
+                }
+                return result;
+        }
+
+        void set_forced_quality(std::optional<EDlssQuality> quality) override {
+                if (quality) {
+                        auto it = std::find_if(m_dlss_specs.begin(), m_dlss_specs.end(), [&](const DlssFeatureSpecs& specs) {
+                                return specs.quality == *quality;
+                        });
+
+                        if (it == m_dlss_specs.end()) {
+                                throw std::runtime_error{fmt::format(
+                                        "DLSS quality '{}' is not available with the current NGX runtime.",
+                                        DlssQualityStrArray[(int)*quality]
+                                )};
+                        }
+                }
+
+                m_forced_quality = quality;
+        }
 
 private:
-	std::shared_ptr<VulkanAndNgx> m_vk_and_ngx;
+        std::shared_ptr<VulkanAndNgx> m_vk_and_ngx;
 
-	std::unique_ptr<DlssFeature> m_dlss_feature;
-	std::vector<DlssFeatureSpecs> m_dlss_specs;
+        std::unique_ptr<DlssFeature> m_dlss_feature;
+        std::vector<DlssFeatureSpecs> m_dlss_specs;
 
-	VulkanTexture m_frame_buffer;
-	VulkanTexture m_depth_buffer;
-	VulkanTexture m_mvec_buffer;
-	VulkanTexture m_exposure_buffer;
-	VulkanTexture m_output_buffer;
+        VulkanTexture m_frame_buffer;
+        VulkanTexture m_depth_buffer;
+        VulkanTexture m_mvec_buffer;
+        VulkanTexture m_exposure_buffer;
+        VulkanTexture m_output_buffer;
 
-	ivec2 m_max_out_resolution;
+        ivec2 m_max_out_resolution;
+        std::optional<EDlssQuality> m_forced_quality;
 };
 
 std::unique_ptr<IDlss> VulkanAndNgx::init_dlss(const ivec2& out_resolution) {

@@ -17,6 +17,8 @@
 #include <neural-graphics-primitives/common.h>
 
 #include <memory>
+#include <optional>
+#include <vector>
 
 namespace ngp {
 
@@ -29,28 +31,30 @@ public:
 		bool is_hdr,
 		bool sharpen
 	) = 0;
-	virtual void run(
-		const ivec2& in_resolution,
-		bool is_hdr,
-		float sharpening,
-		const vec2& jitter_offset,
-		bool shall_reset
-	) = 0;
+        virtual void run(
+                const ivec2& in_resolution,
+                bool is_hdr,
+                float sharpening,
+                const vec2& jitter_offset,
+                bool shall_reset
+        ) = 0;
 
-	virtual cudaSurfaceObject_t frame() = 0;
-	virtual cudaSurfaceObject_t depth() = 0;
-	virtual cudaSurfaceObject_t mvec() = 0;
-	virtual cudaSurfaceObject_t exposure() = 0;
-	virtual cudaSurfaceObject_t output() = 0;
+        virtual cudaSurfaceObject_t frame() = 0;
+        virtual cudaSurfaceObject_t depth() = 0;
+        virtual cudaSurfaceObject_t mvec() = 0;
+        virtual cudaSurfaceObject_t exposure() = 0;
+        virtual cudaSurfaceObject_t output() = 0;
 
-	virtual ivec2 clamp_resolution(const ivec2& resolution) const = 0;
-	virtual ivec2 out_resolution() const = 0;
-	virtual ivec2 max_out_resolution() const = 0;
+        virtual ivec2 clamp_resolution(const ivec2& resolution) const = 0;
+        virtual ivec2 out_resolution() const = 0;
+        virtual ivec2 max_out_resolution() const = 0;
 
-	virtual bool is_hdr() const = 0;
-	virtual bool sharpen() const = 0;
-	virtual EDlssQuality quality() const = 0;
-};
+        virtual bool is_hdr() const = 0;
+        virtual bool sharpen() const = 0;
+        virtual EDlssQuality quality() const = 0;
+        virtual std::vector<EDlssQuality> supported_qualities() const = 0;
+        virtual void set_forced_quality(std::optional<EDlssQuality> quality) = 0;
+}; 
 
 class IDlssProvider {
 public:

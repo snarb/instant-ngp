@@ -123,6 +123,17 @@ Recommended user controls in __instant-ngp__ are:
 * __Rendering -> DLSS:__ toggling this on and setting "DLSS sharpening" to 1.0 can often improve rendering quality.
 * __Rendering -> Crop size:__ trim back the surrounding environment to focus on the model. "Crop aabb" lets you move the center of the volume of interest and fine tune. See more about this feature in [our NeRF training & dataset tips](https://github.com/NVlabs/instant-ngp/blob/master/docs/nerf_dataset_tips.md).
 
+### DLSS quality recommendations
+
+To get the cleanest DLSS output:
+
+1. **Target your final resolution first.** Resize the window (GUI) or pass `--width/--height` to `scripts/run.py` so the DLSS output surface matches your intended resolution; DLSS always upscales into that "full" render buffer.【F:src/testbed.cu†L3256-L3275】【F:scripts/run.py†L392-L409】
+2. **Pick a high-fidelity DLSS preset.** Use the GUI drop-down or `--dlss_mode max_quality`, `--dlss_mode ultra_quality`, or `--dlss_mode dlaa` to force the best quality mode your NGX build supports; the DLAA preset disables dynamic resolution and keeps the DLSS input the same size as the output for pure anti-aliasing.【F:src/testbed.cu†L5697-L5718】【F:scripts/run.py†L158-L179】
+3. **Lock input resolution when you want maximum detail.** Turn off dynamic resolution in the GUI (or leave the DLAA preset active) so the renderer keeps `in_resolution == full_resolution` instead of downscaling frames to chase frame time; this avoids DLSS receiving undersized inputs when performance fluctuates.【F:src/testbed.cu†L3321-L3374】【F:docs/dlss_faq.md†L33-L52】
+4. **Tune sharpening for the scene.** Adjust the DLSS sharpening slider (or `--dlss_sharpening <0-1>`) to counteract soft edges after upscaling; values near 1.0 mimic the default GUI recommendation.【F:src/testbed.cu†L1403-L1435】【F:scripts/run.py†L69-L181】
+
+See [`docs/dlss_faq.md`](docs/dlss_faq.md) for a detailed breakdown of how DLSS picks its internal shading resolution and how to control it from the CLI.
+
 The "Camera path" GUI lets you create a camera path for rendering a video.
 The button "Add from cam" inserts keyframes from the current perspective.
 Then, you can render a video `.mp4` of your camera path or export the keyframes to a `.json` file.

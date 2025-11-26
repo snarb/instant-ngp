@@ -36,6 +36,8 @@
 
 #include <json/json.hpp>
 
+#include <optional>
+
 #ifdef NGP_PYTHON
 #	include <pybind11/numpy.h>
 #	include <pybind11/pybind11.h>
@@ -569,7 +571,10 @@ public:
 	void update_loss_graph();
 	void load_camera_path(const fs::path& path);
 	bool loop_animation();
-	void set_loop_animation(bool value);
+        void set_loop_animation(bool value);
+
+        std::optional<EDlssQuality> forced_dlss_quality() const { return m_forced_dlss_quality; }
+        void set_forced_dlss_quality(std::optional<EDlssQuality> quality);
 
 	float compute_image_mse(bool quantize_to_byte);
 
@@ -1001,9 +1006,10 @@ public:
 	float m_camera_velocity = 1.0f;
 	EColorSpace m_color_space = EColorSpace::Linear;
 	ETonemapCurve m_tonemap_curve = ETonemapCurve::Identity;
-	bool m_dlss = false;
-	std::shared_ptr<IDlssProvider> m_dlss_provider;
-	float m_dlss_sharpening = 0.0f;
+        bool m_dlss = false;
+        std::shared_ptr<IDlssProvider> m_dlss_provider;
+        float m_dlss_sharpening = 0.0f;
+        std::optional<EDlssQuality> m_forced_dlss_quality;
 
 	// 3D stuff
 	float m_render_near_distance = 0.0f;

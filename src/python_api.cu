@@ -398,13 +398,23 @@ PYBIND11_MODULE(pyngp, m) {
 		.value("Orthographic", ELensMode::Orthographic)
 		.export_values();
 
-	py::enum_<ECameraPredictionMode>(m, "CameraPredictionMode")
-		.value("None", ECameraPredictionMode::None)
-		.value("MatLogLinear", ECameraPredictionMode::MatLogLinear)
-		.value("MatLogQuadratic", ECameraPredictionMode::MatLogQuadratic)
-		.value("Se3LogLinear", ECameraPredictionMode::Se3LogLinear)
-		.value("Se3LogQuadratic", ECameraPredictionMode::Se3LogQuadratic)
-		.export_values();
+        py::enum_<ECameraPredictionMode>(m, "CameraPredictionMode")
+                .value("None", ECameraPredictionMode::None)
+                .value("MatLogLinear", ECameraPredictionMode::MatLogLinear)
+                .value("MatLogQuadratic", ECameraPredictionMode::MatLogQuadratic)
+                .value("Se3LogLinear", ECameraPredictionMode::Se3LogLinear)
+                .value("Se3LogQuadratic", ECameraPredictionMode::Se3LogQuadratic)
+                .export_values();
+
+        py::enum_<EDlssQuality>(m, "DlssQuality")
+                .value("UltraPerformance", EDlssQuality::UltraPerformance)
+                .value("MaxPerformance", EDlssQuality::MaxPerformance)
+                .value("Balanced", EDlssQuality::Balanced)
+                .value("MaxQuality", EDlssQuality::MaxQuality)
+                .value("UltraQuality", EDlssQuality::UltraQuality)
+                .value("DLAA", EDlssQuality::DLAA)
+                .value("None", EDlssQuality::None)
+                .export_values();
 
 	py::class_<BoundingBox>(m, "BoundingBox")
 		.def(py::init<>())
@@ -684,11 +694,11 @@ PYBIND11_MODULE(pyngp, m) {
 		.def_readwrite("parallax_shift", &Testbed::m_parallax_shift)
 		.def_readwrite("color_space", &Testbed::m_color_space)
 		.def_readwrite("tonemap_curve", &Testbed::m_tonemap_curve)
-		.def_property(
-			"dlss",
-			[](py::object& obj) { return obj.cast<Testbed&>().m_dlss; },
-			[](const py::object& obj, bool value) {
-				if (value && !obj.cast<Testbed&>().m_dlss_provider) {
+                .def_property(
+                        "dlss",
+                        [](py::object& obj) { return obj.cast<Testbed&>().m_dlss; },
+                        [](const py::object& obj, bool value) {
+                                if (value && !obj.cast<Testbed&>().m_dlss_provider) {
 					if (obj.cast<Testbed&>().m_render_window) {
 						throw std::runtime_error{"DLSS not supported."};
 					} else {
@@ -696,10 +706,27 @@ PYBIND11_MODULE(pyngp, m) {
 					}
 				}
 
-				obj.cast<Testbed&>().m_dlss = value;
-			}
-		)
-		.def_readwrite("dlss_sharpening", &Testbed::m_dlss_sharpening)
+                                obj.cast<Testbed&>().m_dlss = value;
+                        }
+                )
+                .def_property(
+                        "dlss_mode",
+                        [](py::object& obj) -> py::object {
+                                auto quality = obj.cast<Testbed&>().forced_dlss_quality();
+                                if (quality) {
+                                        return py::cast(*quality);
+                                }
+                                return py::none();
+                        },
+                        [](const py::object& obj, py::object value) {
+                                if (value.is_none()) {
+                                        obj.cast<Testbed&>().set_forced_dlss_quality({});
+                                } else {
+                                        obj.cast<Testbed&>().set_forced_dlss_quality(value.cast<EDlssQuality>());
+                                }
+                        }
+                )
+                .def_readwrite("dlss_sharpening", &Testbed::m_dlss_sharpening)
 		.def("crop_box", &Testbed::crop_box, py::arg("nerf_space") = true)
 		.def("set_crop_box", &Testbed::set_crop_box, py::arg("matrix"), py::arg("nerf_space") = true)
 		.def("crop_box_corners", &Testbed::crop_box_corners, py::arg("nerf_space") = true)

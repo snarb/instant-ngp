@@ -755,20 +755,30 @@ void CudaRenderBuffer::overlay_false_color(ivec2 training_resolution, bool to_sr
 
 void CudaRenderBuffer::enable_dlss(IDlssProvider& dlss_provider, const ivec2& max_out_res) {
 #ifdef NGP_VULKAN
-	if (!m_dlss || m_dlss->max_out_resolution() != max_out_res) {
-		m_dlss = dlss_provider.init_dlss(max_out_res);
-	}
+        if (!m_dlss || m_dlss->max_out_resolution() != max_out_res) {
+                m_dlss = dlss_provider.init_dlss(max_out_res);
+        }
 
-	if (m_dlss) {
-		resize(m_dlss->clamp_resolution(in_resolution()));
-	}
+        if (m_dlss) {
+                m_dlss->set_forced_quality(m_forced_dlss_quality);
+                resize(m_dlss->clamp_resolution(in_resolution()));
+        }
 #else
-	throw std::runtime_error{"NGP was compiled without Vulkan/NGX/DLSS support."};
+        throw std::runtime_error{"NGP was compiled without Vulkan/NGX/DLSS support."};
 #endif
 }
 
 void CudaRenderBuffer::disable_dlss() {
-	m_dlss = nullptr;
+        m_dlss = nullptr;
+}
+
+void CudaRenderBuffer::set_forced_dlss_quality(std::optional<EDlssQuality> quality) {
+        m_forced_dlss_quality = quality;
+#ifdef NGP_VULKAN
+        if (m_dlss) {
+                m_dlss->set_forced_quality(m_forced_dlss_quality);
+        }
+#endif
 }
 
 }

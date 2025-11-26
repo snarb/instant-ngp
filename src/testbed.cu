@@ -1403,14 +1403,37 @@ void Testbed::imgui() {
 		ImGui::BeginDisabled(!m_dlss_provider);
 		accum_reset |= ImGui::Checkbox("DLSS", &m_dlss);
 
-		if (render_buffer->dlss()) {
-			ImGui::SameLine();
-			ImGui::Text("(%s)", DlssQualityStrArray[(int)render_buffer->dlss()->quality()]);
-			ImGui::SameLine();
-			ImGui::PushItemWidth(ImGui::GetWindowWidth() * 0.3f);
-			ImGui::SliderFloat("Sharpening", &m_dlss_sharpening, 0.0f, 1.0f, "%.02f");
-			ImGui::PopItemWidth();
-		}
+                if (render_buffer->dlss()) {
+                        auto& dlss_instance = render_buffer->dlss();
+                        const char* active_quality = DlssQualityStrArray[(int)dlss_instance->quality()];
+                        std::string combo_preview = m_forced_dlss_quality
+                                ? fmt::format("{} (requested)", DlssQualityStrArray[(int)*m_forced_dlss_quality])
+                                : fmt::format("Auto ({})", active_quality);
+
+                        ImGui::SameLine();
+                        ImGui::Text("(%s)", active_quality);
+
+                        ImGui::SetNextItemWidth(ImGui::GetWindowWidth() * 0.3f);
+                        if (ImGui::BeginCombo("DLSS mode", combo_preview.c_str())) {
+                                bool auto_selected = !m_forced_dlss_quality;
+                                if (ImGui::Selectable(fmt::format("Auto ({})", active_quality).c_str(), auto_selected)) {
+                                        set_forced_dlss_quality({});
+                                }
+
+                                for (auto quality : dlss_instance->supported_qualities()) {
+                                        const char* label = DlssQualityStrArray[(int)quality];
+                                        bool selected = m_forced_dlss_quality && *m_forced_dlss_quality == quality;
+                                        if (ImGui::Selectable(label, selected)) {
+                                                set_forced_dlss_quality(quality);
+                                        }
+                                }
+
+                                ImGui::EndCombo();
+                        }
+
+                        ImGui::SetNextItemWidth(ImGui::GetWindowWidth() * 0.3f);
+                        ImGui::SliderFloat("Sharpening", &m_dlss_sharpening, 0.0f, 1.0f, "%.02f");
+                }
 
 		if (!m_dlss_provider) {
 			ImGui::SameLine();
@@ -3598,12 +3621,13 @@ void Testbed::set_n_views(size_t n_views) {
 	m_rgba_render_textures.resize(n_views);
 	m_depth_render_textures.resize(n_views);
 
-	while (m_views.size() < n_views) {
-		size_t idx = m_views.size();
-		m_rgba_render_textures[idx] = std::make_shared<GLTexture>();
-		m_depth_render_textures[idx] = std::make_shared<GLTexture>();
-		m_views.emplace_back(View{std::make_shared<CudaRenderBuffer>(m_rgba_render_textures[idx], m_depth_render_textures[idx])});
-	}
+        while (m_views.size() < n_views) {
+                size_t idx = m_views.size();
+                m_rgba_render_textures[idx] = std::make_shared<GLTexture>();
+                m_depth_render_textures[idx] = std::make_shared<GLTexture>();
+                m_views.emplace_back(View{std::make_shared<CudaRenderBuffer>(m_rgba_render_textures[idx], m_depth_render_textures[idx])});
+                m_views.back().render_buffer->set_forced_dlss_quality(m_forced_dlss_quality);
+        }
 
 	if (changed_views) {
 		set_camera_prediction_mode(m_camera_prediction_mode);
@@ -3771,10 +3795,11 @@ void Testbed::init_window(int resw, int resh, bool hidden, bool second_window) {
 	m_views.front().full_resolution = m_window_res;
 	m_views.front().render_buffer->resize(m_views.front().full_resolution);
 
-	m_pip_render_texture = std::make_shared<GLTexture>();
-	m_pip_render_buffer = std::make_shared<CudaRenderBuffer>(m_pip_render_texture);
+        m_pip_render_texture = std::make_shared<GLTexture>();
+        m_pip_render_buffer = std::make_shared<CudaRenderBuffer>(m_pip_render_texture);
+        m_pip_render_buffer->set_forced_dlss_quality(m_forced_dlss_quality);
 
-	m_render_window = true;
+        m_render_window = true;
 
 	if (m_second_window.window == nullptr && second_window) {
 		create_second_window();
@@ -5668,5 +5693,29 @@ void Testbed::load_camera_path(const fs::path& path) { m_camera_path.load(path, 
 bool Testbed::loop_animation() { return m_camera_path.loop; }
 
 void Testbed::set_loop_animation(bool value) { m_camera_path.loop = value; }
+
+void Testbed::set_forced_dlss_quality(std::optional<EDlssQuality> quality) {
+        m_forced_dlss_quality = quality;
+
+        if (m_forced_dlss_quality && *m_forced_dlss_quality == EDlssQuality::DLAA) {
+                m_dynamic_res = false;
+                m_fixed_res_factor = 8;
+        }
+
+        auto apply = [&](const std::shared_ptr<CudaRenderBuffer>& buffer) {
+                if (buffer) {
+                        buffer->set_forced_dlss_quality(m_forced_dlss_quality);
+                }
+        };
+
+        for (auto& view : m_views) {
+                apply(view.render_buffer);
+        }
+
+        apply(m_pip_render_buffer);
+        m_windowless_render_surface.set_forced_dlss_quality(m_forced_dlss_quality);
+
+        reset_accumulation(true);
+}
 
 } // namespace ngp

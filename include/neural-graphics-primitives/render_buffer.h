@@ -21,6 +21,7 @@
 #include <tiny-cuda-nn/gpu_memory.h>
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace ngp {
@@ -278,15 +279,16 @@ public:
 		}
 	}
 
-	void enable_dlss(IDlssProvider& dlss_provider, const ivec2& max_out_res);
-	void disable_dlss();
-	void set_dlss_sharpening(float value) {
-		m_dlss_sharpening = value;
-	}
+        void enable_dlss(IDlssProvider& dlss_provider, const ivec2& max_out_res);
+        void disable_dlss();
+        void set_dlss_sharpening(float value) {
+                m_dlss_sharpening = value;
+        }
+        void set_forced_dlss_quality(std::optional<EDlssQuality> quality);
 
-	const std::unique_ptr<IDlss>& dlss() const {
-		return m_dlss;
-	}
+        const std::unique_ptr<IDlss>& dlss() const {
+                return m_dlss;
+        }
 
 	void set_hidden_area_mask(const std::shared_ptr<Buffer2D<uint8_t>>& hidden_area_mask) {
 		m_hidden_area_mask = hidden_area_mask;
@@ -297,12 +299,13 @@ public:
 	}
 
 private:
-	uint32_t m_spp = 0;
-	EColorSpace m_color_space = EColorSpace::Linear;
-	ETonemapCurve m_tonemap_curve = ETonemapCurve::Identity;
+        uint32_t m_spp = 0;
+        EColorSpace m_color_space = EColorSpace::Linear;
+        ETonemapCurve m_tonemap_curve = ETonemapCurve::Identity;
 
-	std::unique_ptr<IDlss> m_dlss;
-	float m_dlss_sharpening = 0.0f;
+        std::unique_ptr<IDlss> m_dlss;
+        float m_dlss_sharpening = 0.0f;
+        std::optional<EDlssQuality> m_forced_dlss_quality;
 
 	ivec2 m_in_resolution = ivec2(0);
 

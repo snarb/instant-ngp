@@ -133,17 +133,18 @@ enum class ETonemapCurve : int { Identity, ACES, Hable, Reinhard };
 static constexpr const char* TonemapCurveStr = "Identity\0ACES\0Hable\0Reinhard\0\0";
 
 enum class EDlssQuality : int {
-	UltraPerformance,
-	MaxPerformance,
-	Balanced,
-	MaxQuality,
-	UltraQuality,
-	NumDlssQualitySettings,
-	None,
+        UltraPerformance,
+        MaxPerformance,
+        Balanced,
+        MaxQuality,
+        UltraQuality,
+        DLAA,
+        NumDlssQualitySettings,
+        None,
 };
-static constexpr const char* DlssQualityStr = "UltraPerformance\0MaxPerformance\0Balanced\0MaxQuality\0UltraQuality\0Invalid\0None\0\0";
+static constexpr const char* DlssQualityStr = "UltraPerformance\0MaxPerformance\0Balanced\0MaxQuality\0UltraQuality\0DLAA\0Invalid\0None\0\0";
 static constexpr const char* DlssQualityStrArray[] = {
-	"UltraPerformance", "MaxPerformance", "Balanced", "MaxQuality", "UltraQuality", "Invalid", "None"
+        "UltraPerformance", "MaxPerformance", "Balanced", "MaxQuality", "UltraQuality", "DLAA", "Invalid", "None"
 };
 
 enum class ETestbedMode : int {

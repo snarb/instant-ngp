@@ -59,6 +59,15 @@ def parse_args():
 	parser.add_argument("--video_spp", type=int, default=8, help="Number of samples per pixel. A larger number means less noise, but slower rendering.")
 	parser.add_argument("--video_output", type=str, default="video.mp4", help="Filename of the output video (video.mp4) or video frames (video_%%04d.png).")
 
+	parser.add_argument("--dlss", action="store_true", help="Enable NVIDIA DLSS during rendering. Requires a window to be initialized; a hidden window will be created automatically when running headless.")
+	parser.add_argument(
+		"--dlss_mode",
+choices=["auto", "ultra_performance", "max_performance", "balanced", "max_quality", "ultra_quality", "dlaa"],
+default="auto",
+help="Force a DLSS quality preset. Use 'dlaa' to run DLSS as an anti-aliasing pass without upscaling."
+	)
+	parser.add_argument("--dlss_sharpening", "--dlss-sharpening", type=float, default=None, help="Override the DLSS sharpening amount (0.0 - 1.0). Only used when DLSS is enabled.")
+
 	parser.add_argument("--save_mesh", default="", help="Output a marching-cubes based mesh from the NeRF or SDF model. Supports OBJ and PLY format.")
 	parser.add_argument("--marching_cubes_res", default=256, type=int, help="Sets the resolution for the marching cubes grid.")
 	parser.add_argument("--marching_cubes_density_thresh", default=2.5, type=float, help="Sets the density threshold for marching cubes.")
@@ -109,14 +118,21 @@ if __name__ == "__main__":
 
 		testbed.load_training_data(args.scene)
 
-	if args.gui:
+	if args.dlss_mode != "auto":
+		args.dlss = True
+
+	need_window = args.gui or args.dlss
+	if need_window:
 		# Pick a sensible GUI resolution depending on arguments.
 		sw = args.width or 1920
 		sh = args.height or 1080
 		while sw * sh > 1920 * 1080 * 4:
 			sw = int(sw / 2)
 			sh = int(sh / 2)
-		testbed.init_window(sw, sh, second_window=args.second_window)
+
+		hidden = not args.gui
+		second_window = args.second_window if args.gui else False
+		testbed.init_window(sw, sh, hidden=hidden, second_window=second_window)
 		if args.vr:
 			testbed.init_vr()
 
@@ -137,6 +153,32 @@ if __name__ == "__main__":
 
 	if testbed.mode == ngp.TestbedMode.Sdf:
 		testbed.tonemap_curve = ngp.TonemapCurve.ACES
+
+	if args.dlss:
+		try:
+			testbed.dlss = True
+		except RuntimeError as exc:
+			raise RuntimeError("DLSS was requested but is not available on this system.") from exc
+
+	if args.dlss_mode != "auto":
+		dlss_mode_map = {
+			"ultra_performance": ngp.DlssQuality.UltraPerformance,
+			"max_performance": ngp.DlssQuality.MaxPerformance,
+			"balanced": ngp.DlssQuality.Balanced,
+			"max_quality": ngp.DlssQuality.MaxQuality,
+			"ultra_quality": ngp.DlssQuality.UltraQuality,
+			"dlaa": ngp.DlssQuality.DLAA,
+			}
+
+		try:
+			testbed.dlss_mode = dlss_mode_map[args.dlss_mode]
+		except RuntimeError as exc:
+			raise RuntimeError(
+				 f"DLSS mode '{args.dlss_mode}' is not supported by the installed NGX runtime or output resolution."
+			) from exc
+
+	if args.dlss_sharpening is not None:
+                testbed.dlss_sharpening = max(0.0, min(1.0, float(args.dlss_sharpening)))
 
 	testbed.nerf.sharpen = float(args.sharpen)
 	testbed.exposure = args.exposure
