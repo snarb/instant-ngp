@@ -366,7 +366,7 @@ This work is made available under the Nvidia Source Code License-NC. Click [here
 ---
 ## ***AINA***
 
-scripts/train-ngp-aina.py
+scripts/train-video.py
 
 
 # Instant-NGP Sequential Frame Trainer & Renderer
@@ -409,13 +409,13 @@ Each numbered subdirectory represents a frame/timestep with its own set of multi
 Train models for all frames in a dataset:
 
 ```bash
-python scripts/train-ngp-aina.py /path/to/dataset_root --instant_root /path/to/instant-ngp
+python scripts/train-video.py /path/to/dataset_root --instant_root /path/to/instant-ngp
 ```
 
 ### Training with Custom Parameters
 
 ```bash
-python scripts/train-ngp-aina.py /path/to/dataset_root \
+python scripts/train-video.py /path/to/dataset_root \
     --instant_root /path/to/instant-ngp \
     --first_step_n_steps 20000 \
     --following_n_steps 10000 \
@@ -428,7 +428,7 @@ python scripts/train-ngp-aina.py /path/to/dataset_root \
 Train models and immediately render a video:
 
 ```bash
-python scripts/train-ngp-aina.py /path/to/dataset_root \
+python scripts/train-video.py /path/to/dataset_root \
     --instant_root /path/to/instant-ngp \
     --render_after_train \
     --render_camera_path camera_path.json \
@@ -441,7 +441,7 @@ python scripts/train-ngp-aina.py /path/to/dataset_root \
 If models are already trained, render a video without retraining:
 
 ```bash
-python scripts/train-ngp-aina.py /path/to/dataset_root \
+python scripts/train-video.py /path/to/dataset_root \
     --instant_root /path/to/instant-ngp \
     --render_only \
     --render_camera_path camera_path.json \
@@ -516,6 +516,6 @@ python scripts/train-ngp-aina.py /path/to/dataset_root \
 
 
 -------------
-scripts/run-ngp-aina.py
+scripts/run.py
 The same as scripts/run.py but with extra params like aabb,
 rfl, ffmpeg_path. Use it when required for debugging.

@@ -1,27 +1,3 @@
-#!/usr/bin/env python3
-"""
-Instant-NGP per-frame training and rendering automation.
-
-This script automates:
-1. Running COLMAP either once (default) or per frame (via --colmap_each_frame) to generate transforms.json.
-2. Training each frame sequentially, saving per-frame snapshots.
-3. Rendering a combined video sequence using the trained snapshots.
-
-Modes:
-- Default (single COLMAP): run COLMAP on the first frame, copy transforms.json to all frames,
-  then fix paths per frame before training.
-- Per-frame COLMAP (--colmap_each_frame): run COLMAP inside every training frame folder,
-  writing its own transforms.json per frame. No copying is performed.
-
-Features:
-- Recreates logs on each run.
-- Stores snapshots per-frame in a specified root.
-- Optional rendering with configurable AABB and ffmpeg path.
-- Can preserve or clean temporary render directories.
-
-Author: Pavlo Konovalov
-Refactored by ChatGPT (GPT-5)
-"""
 
 from __future__ import annotations
 import sys
@@ -150,88 +126,66 @@ def build_sequence(frames, palindrome=False):
     return seq
 
 
-def _colmap_cmd_for_frame(instant_root: Path,
-                          frame_dir: Path,
-                          out_path: Path,
-                          aabb_scale: int | None,
-                          multi_camera: bool,
-                          mask_categories: list[str] | None) -> list[str]:
-    """Build the colmap2nerf.py command for a specific frame directory."""
-    text_folder = frame_dir / "sparse"
+def run_colmap(instant_root: Path, reference_frame: Path, out_path: Path, aabb_scale: int | None,
+               multi_camera: bool, mask_categories: list[str] | None, skip_colmap: bool):
+    """Run colmap2nerf.py to generate transforms.json, unless skipped."""
+    logger = logging.getLogger()
+    text_folder = reference_frame / "sparse"
     text_folder.mkdir(parents=True, exist_ok=True)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
+    colmap_cmd = [
         sys.executable, str(instant_root / "scripts/colmap2nerf.py"),
-        "--colmap_db", str(frame_dir / "database.db"),
+        "--colmap_db", str(reference_frame / "database.db"),
         "--text", str(text_folder),
-        "--images", str(frame_dir),
+        "--images", str(reference_frame),
         "--out", str(out_path),
         "--run_colmap", "--overwrite",
     ]
     if aabb_scale:
-        cmd += ["--aabb_scale", str(aabb_scale)]
+        colmap_cmd += ["--aabb_scale", str(aabb_scale)]
     if multi_camera:
-        cmd += ["--multi_camera"]
+        colmap_cmd += ["--multi_camera"]
     if mask_categories:
-        cmd += ["--mask_categories", *map(str, mask_categories)]
-    return cmd
+        colmap_cmd += ["--mask_categories", *map(str, mask_categories)]
 
-
-def run_colmap_once(instant_root: Path,
-                    reference_frame: Path,
-                    out_path: Path,
-                    aabb_scale: int | None,
-                    multi_camera: bool,
-                    mask_categories: list[str] | None,
-                    skip_colmap: bool):
-    """Run colmap2nerf.py on a single reference frame to produce transforms.json."""
-    logger = logging.getLogger()
     if not skip_colmap:
-        logger.info("Running single COLMAP on reference frame: %s", reference_frame.name)
-        run(_colmap_cmd_for_frame(
-            instant_root, reference_frame, out_path, aabb_scale, multi_camera, mask_categories
-        ), cwd=instant_root)
+        logger.info("Running colmap2nerf.py using reference frame: %s", reference_frame.name)
+        run(colmap_cmd, cwd=instant_root)
     else:
-        logger.info("Skipping single COLMAP. Assuming transforms.json exists at: %s", out_path)
+        logger.info("Skipping COLMAP. Assuming transforms.json exists at: %s", out_path)
 
     if not out_path.exists():
         raise FileNotFoundError(f"transforms.json not found at {out_path} after COLMAP stage.")
 
 
-def run_colmap_per_frame(instant_root: Path,
-                         frames: list[Path],
-                         aabb_scale: int | None,
-                         multi_camera: bool,
-                         mask_categories: list[str] | None,
-                         skip_colmap: bool):
-    """Run colmap2nerf.py separately inside each frame directory."""
-    logger = logging.getLogger()
-    for i, frame_dir in enumerate(frames, 1):
-        out_path = frame_dir / "transforms.json"
-        if skip_colmap:
-            logger.info("Skipping COLMAP for frame %s; expecting existing %s", frame_dir.name, out_path)
-        else:
-            logger.info("(%d/%d) Running COLMAP for frame %s", i, len(frames), frame_dir.name)
-            run(_colmap_cmd_for_frame(
-                instant_root, frame_dir, out_path, aabb_scale, multi_camera, mask_categories
-            ), cwd=instant_root)
-
-        if not out_path.exists():
-            raise FileNotFoundError(f"[per-frame] transforms.json missing for {frame_dir} after COLMAP.")
-
-
 def copy_transforms_to_all(out_path: Path, dataset_root: Path, all_frames: list[Path]):
-    """Copy the generated transforms.json to all frame subfolders for consistency."""
+    """
+    Copy the generated transforms.json to every frame directory and fix file paths
+    so that each frame's transforms point to the correct images.
+
+    Also copy transforms.json to dataset_root (not rewritten).
+    """
     logger = logging.getLogger()
+
+    # Copy to dataset_root unchanged (global reference, optional use)
     target_dataset_transform = dataset_root / "transforms.json"
     shutil.copy2(out_path, target_dataset_transform)
     logger.info("Copied %s -> %s", out_path, target_dataset_transform)
 
+    # Copy and rewrite for every frame folder
     for frame in all_frames:
         dst = frame / "transforms.json"
-        if dst.resolve() != out_path.resolve():
+
+        # Always copy (even if same file), then fix paths
+        if out_path != dst:
             shutil.copy2(out_path, dst)
+            logger.info("Copied %s -> %s", out_path, dst)
+
+        # Fix paths for this specific frame
+        fix_transforms_paths(dst, frame, overwrite=True)
+        logger.info("Fixed file_path entries in %s for frame %s", dst, frame.name)
+
 
 
 def train_frames(instant_root: Path, training_frames: list[Path], first_steps: int, follow_steps: int,
@@ -249,9 +203,6 @@ def train_frames(instant_root: Path, training_frames: list[Path], first_steps: i
         frame_start = time.time()
         logger.info("--- Training frame %s (%d/%d) ---", frame.name, idx + 1, len(training_frames))
 
-        # Ensure transforms.json points to the current frame images
-        fix_transforms_paths(frame / "transforms.json", frame, overwrite=True)
-
         # Create per-frame snapshot directory
         frame_snap_dir = snapshots_root / frame.name
         if frame_snap_dir.exists():
@@ -263,7 +214,7 @@ def train_frames(instant_root: Path, training_frames: list[Path], first_steps: i
         resume_step = 0 if idx == 0 else first_steps
 
         run_cmd = [
-            sys.executable, str(instant_root / "scripts/run-ngp-aina.py"),
+            sys.executable, str(instant_root / "scripts/run.py"),
             "--scene", str(frame),
             "--save_snapshot", str(snapshot_path),
             "--n_steps", str(steps_to_go),
@@ -272,7 +223,7 @@ def train_frames(instant_root: Path, training_frames: list[Path], first_steps: i
         if idx > 0 and prev_snapshot:
             run_cmd += ["--load_snapshot", str(prev_snapshot)]
         if extra_args:
-            run_cmd += list(extra_args)
+            run_cmd += list(extra_args) #prev_snapshot = '/fsx/Test_Prism_new/Walking1/cropped_jpgs/sequence1/seqA1/snapshots/000149/snapshot_000149.msgpack'
 
         run(run_cmd, cwd=instant_root)
         prev_snapshot = snapshot_path
@@ -320,7 +271,7 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
 
         render_cmd = [
             sys.executable,
-            str(instant_root / "scripts/run-ngp-aina.py"),
+            str(instant_root / "scripts/run.py"),
             "--scene", str(frame),
             "--load_snapshot", str(snapshot),
             "--video_camera_path", str(camera_path),
@@ -377,12 +328,10 @@ def parse_args():
     # COLMAP
     p.add_argument("--aabb_scale", type=int)
     p.add_argument("--mask_categories", nargs="*")
-    p.add_argument("--colmap_out", type=Path, help="Where to write transforms.json (default: first frame folder, single-run mode)")
+    p.add_argument("--colmap_out", type=Path, help="Where to write transforms.json (default: first frame folder)")
     p.add_argument("--skip_colmap", action="store_true")
     p.add_argument("--multi_camera", action="store_true",
                    help="Forward to colmap2nerf.py to allow multiple cameras (different resolutions).")
-    p.add_argument("--colmap_each_frame", action="store_true",
-                   help="Run COLMAP per frame instead of once on the first frame.")
 
     # Rendering
     p.add_argument("--render_only", action="store_true")
@@ -395,24 +344,47 @@ def parse_args():
     p.add_argument("--render_output", type=Path, default=None)
     p.add_argument("--render_keep_frames", action="store_true")
     p.add_argument("--render_extra_args", nargs="*")
+    p.add_argument("--colmap_only", action="store_true", help="Only runs comap and fixes paths")
+
 
     # Rendering region (instead of hardcoded AABB)
     p.add_argument(
-        "--aabb_rendering",
-        nargs=6,
-        type=str,
-        default=None,
-        metavar=('minx', 'miny', 'minz', 'maxx', 'maxy', 'maxz'),
-        help="AABB values for rendering region."
-    )
+		"--aabb_rendering",
+		nargs=6,
+		type=str,
+		default=None,
+		metavar=('minx', 'miny', 'minz', 'maxx', 'maxy', 'maxz'),
+		help="AABB values for rendering region."
+	)
 
-    # ffmpeg binary path override
+
+# ffmpeg binary path override
     p.add_argument("--ffmpeg_path", type=str, default=None,
                    help="Custom path to ffmpeg binary; defaults to 'ffmpeg' in PATH.")
 
     # Keep tmp_render/ between runs
     p.add_argument("--keep_temp_dir", action="store_true",
                    help="Keep temporary render directory instead of recreating.")
+
+    # --- NEW: Weights & Biases integration (forward to run.py) ---
+    p.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging inside run.py.",
+    )
+    p.add_argument(
+        "--wandb_project",
+        type=str,
+        default="",
+        help="W&B project name.",
+    )
+
+    p.add_argument(
+        "--wandb_experiment",
+        type=str,
+        default="",
+        help="Base experiment name; frame index can be appended if desired.",
+    )
 
     args, extra = p.parse_known_args()
     return args, extra
@@ -445,6 +417,17 @@ def main():
     dataset_root = args.dataset_root.resolve()
     instant_root = args.instant_root.resolve()
     snapshots_root = args.snapshots_root.resolve()
+    # Build common extra args that will be forwarded to run.py
+    common_extra_args = list(args.render_extra_args or [])
+
+    if args.wandb:
+        common_extra_args.append("--wandb")
+        if args.wandb_project:
+            common_extra_args += ["--wandb_project", args.wandb_project]
+        if args.wandb_experiment:
+            # We pass the same experiment name to each per-frame run; you can
+            # encode frame index inside run-ngp-aina if needed.
+            common_extra_args += ["--wandb_experiment", args.wandb_experiment]
 
     # init logging (overwrites previous log file)
     log_file_path = dataset_root / "training_log.txt"
@@ -468,32 +451,24 @@ def main():
             sys.exit(1)
         logger.info("Found %d frames to train out of %d total.", len(training_frames), len(all_frames))
 
-        if args.colmap_each_frame:
-            # Per-frame COLMAP
-            run_colmap_per_frame(
-                instant_root=instant_root,
-                frames=training_frames,
-                aabb_scale=args.aabb_scale,
-                multi_camera=args.multi_camera,
-                mask_categories=args.mask_categories,
-                skip_colmap=args.skip_colmap,
-            )
-        else:
-            # Single COLMAP on reference frame, then copy everywhere
-            reference_frame = all_frames[0]
-            out_path = (args.colmap_out.resolve() if args.colmap_out else (reference_frame / "transforms.json"))
-            run_colmap_once(
-                instant_root=instant_root,
-                reference_frame=reference_frame,
-                out_path=out_path,
-                aabb_scale=args.aabb_scale,
-                multi_camera=args.multi_camera,
-                mask_categories=args.mask_categories,
-                skip_colmap=args.skip_colmap,
-            )
-            copy_transforms_to_all(out_path, dataset_root, all_frames)
+        reference_frame = all_frames[0]
+        out_path = (args.colmap_out.resolve() if args.colmap_out else (reference_frame / "transforms.json"))
+        run_colmap(
+            instant_root=instant_root,
+            reference_frame=reference_frame,
+            out_path=out_path,
+            aabb_scale=args.aabb_scale,
+            multi_camera=args.multi_camera,
+            mask_categories=args.mask_categories,
+            skip_colmap=args.skip_colmap,
+        )
 
-        # Train
+        copy_transforms_to_all(out_path, dataset_root, all_frames)
+
+        if args.colmap_only:
+            logger.error("Finished creating colmap data.")
+            sys.exit(0)
+
         snapshots_root.mkdir(parents=True, exist_ok=True)
         train_frames(
             instant_root=instant_root,
@@ -501,7 +476,7 @@ def main():
             first_steps=args.first_step_n_steps,
             follow_steps=args.following_n_steps,
             snapshots_root=snapshots_root,
-            extra_args=(args.render_extra_args or []),
+            extra_args=common_extra_args,
         )
     else:
         logger.info("--- Render-only mode enabled. Skipping COLMAP and training. ---")
@@ -534,11 +509,12 @@ def main():
             output_path=final_output,
             snapshots_root=snapshots_root,
             keep_frames=args.render_keep_frames,
-            extra_args=(args.render_extra_args or []),
+            extra_args=common_extra_args,
             aabb_rendering=args.aabb_rendering,
             ffmpeg_path=ffmpeg_path,
             keep_temp_dir=args.keep_temp_dir,
         )
+
         logger.info("Combined video saved to: %s", final_output)
 
     logger.info("Script finished successfully.")

@@ -173,7 +173,7 @@ def render_combined_video(instant_root: Path, camera_path: Path, sequence_frames
       END_FRAME = frames_per_segment * (i + 1)
       render_cmd = [
          sys.executable,
-         str(instant_root / "scripts/run-ngp-aina.py"),
+         str(instant_root / "scripts/run.py"),
          "--scene", str(frame),
          "--load_snapshot", str(snapshot),
          "--video_camera_path", str(camera_path),
@@ -377,7 +377,7 @@ def main():
          cur_step += steps_to_go
 
          run_cmd = [
-            sys.executable, str(instant_root / "scripts/run-ngp-aina.py"),
+            sys.executable, str(instant_root / "scripts/run.py"),
             "--scene", str(frame),
             "--save_snapshot", str(snapshot_path),
             "--n_steps", str(cur_step)

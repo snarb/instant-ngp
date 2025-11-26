@@ -1,5 +1,5 @@
 """
-Convenient runner wrapper for train-ngp-aina.py.
+Convenient runner wrapper for train-video.py.
 Allows easy modification of arguments in one place.
 """
 
@@ -35,7 +35,7 @@ LOG_VAL_IMAGES = True
 # ------------------------------
 
 cmd_parts = [
-    "/home/ubuntu/anaconda3/envs/ngp/bin/python3", "train-ngp-aina.py",
+    "/home/ubuntu/anaconda3/envs/ngp/bin/python3", "train-video.py",
     "--scene", SCENE,
     "--test_transforms", TEST_SCENE,
     "--n_steps", str(N_STEPS),

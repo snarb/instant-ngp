@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple fixed runner that calls scripts/run-ngp-aina.py
+Simple fixed runner that calls scripts/run.py
 using constant parameters (no argparse).
 """
 
 import subprocess
 import shlex
 
-WRAPPER = "scripts/run-ngp-aina.py"
+WRAPPER = "scripts/run.py"
 
 # ------------------------------
 # CONSTANT CONFIG (EDIT HERE)
