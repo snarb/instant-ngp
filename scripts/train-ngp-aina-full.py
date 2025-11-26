@@ -18,14 +18,39 @@ import time
 logger = logging.getLogger()
 
 
-def run(cmd, cwd=None):
-   """Executes a command and logs its execution and result."""
-   logger.info(f"Running: {' '.join(map(str, cmd))}")
-   result = subprocess.run(cmd, cwd=str(cwd) if cwd is not None else None, capture_output=True, text=True)
-   if result.returncode != 0:
-      error_msg = f"Command failed: {' '.join(map(str, cmd))} (rc={result.returncode})\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}"
-      logger.error(error_msg)
-      sys.exit(error_msg)
+import subprocess, os
+from pathlib import Path
+
+def run(cmd, cwd=None, env=None):
+    logger.info("Running: %s", " ".join(map(str, cmd)))
+
+    env2 = os.environ.copy()
+    env2.update(env or {})
+    env2.setdefault("PYTHONUNBUFFERED", "1")
+
+    process = subprocess.Popen(
+        cmd,
+        cwd=str(cwd) if cwd else None,
+        env=env2,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True,
+    )
+
+    try:
+        for line in process.stdout:
+            logger.info("[child] %s", line.rstrip())
+    except Exception:
+        logger.exception("While streaming child output")
+
+    rc = process.wait()
+    if rc != 0:
+        logger.error("Command failed (rc=%s): %s", rc, " ".join(map(str, cmd)))
+        sys.exit(1)
+    return rc
+
 
 
 def try_int_sort(paths):

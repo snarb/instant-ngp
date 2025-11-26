@@ -160,16 +160,32 @@ def run_colmap(instant_root: Path, reference_frame: Path, out_path: Path, aabb_s
 
 
 def copy_transforms_to_all(out_path: Path, dataset_root: Path, all_frames: list[Path]):
-    """Copy the generated transforms.json to all frame subfolders for consistency."""
+    """
+    Copy the generated transforms.json to every frame directory and fix file paths
+    so that each frame's transforms point to the correct images.
+
+    Also copy transforms.json to dataset_root (not rewritten).
+    """
     logger = logging.getLogger()
+
+    # Copy to dataset_root unchanged (global reference, optional use)
     target_dataset_transform = dataset_root / "transforms.json"
     shutil.copy2(out_path, target_dataset_transform)
     logger.info("Copied %s -> %s", out_path, target_dataset_transform)
 
+    # Copy and rewrite for every frame folder
     for frame in all_frames:
         dst = frame / "transforms.json"
-        if dst.resolve() != out_path.resolve():
+
+        # Always copy (even if same file), then fix paths
+        if out_path != dst:
             shutil.copy2(out_path, dst)
+            logger.info("Copied %s -> %s", out_path, dst)
+
+        # Fix paths for this specific frame
+        fix_transforms_paths(dst, frame, overwrite=True)
+        logger.info("Fixed file_path entries in %s for frame %s", dst, frame.name)
+
 
 
 def train_frames(instant_root: Path, training_frames: list[Path], first_steps: int, follow_steps: int,
@@ -186,9 +202,6 @@ def train_frames(instant_root: Path, training_frames: list[Path], first_steps: i
     for idx, frame in enumerate(training_frames):
         frame_start = time.time()
         logger.info("--- Training frame %s (%d/%d) ---", frame.name, idx + 1, len(training_frames))
-
-        # Ensure transforms.json points to the current frame images
-        fix_transforms_paths(frame / "transforms.json", frame, overwrite=True)
 
         # Create per-frame snapshot directory
         frame_snap_dir = snapshots_root / frame.name
@@ -331,6 +344,8 @@ def parse_args():
     p.add_argument("--render_output", type=Path, default=None)
     p.add_argument("--render_keep_frames", action="store_true")
     p.add_argument("--render_extra_args", nargs="*")
+    p.add_argument("--colmap_only", action="store_true", help="Only runs comap and fixes paths")
+
 
     # Rendering region (instead of hardcoded AABB)
     p.add_argument(
@@ -350,6 +365,26 @@ def parse_args():
     # Keep tmp_render/ between runs
     p.add_argument("--keep_temp_dir", action="store_true",
                    help="Keep temporary render directory instead of recreating.")
+
+    # --- NEW: Weights & Biases integration (forward to run-ngp-aina.py) ---
+    p.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging inside run-ngp-aina.py.",
+    )
+    p.add_argument(
+        "--wandb_project",
+        type=str,
+        default="",
+        help="W&B project name.",
+    )
+
+    p.add_argument(
+        "--wandb_experiment",
+        type=str,
+        default="",
+        help="Base experiment name; frame index can be appended if desired.",
+    )
 
     args, extra = p.parse_known_args()
     return args, extra
@@ -382,6 +417,17 @@ def main():
     dataset_root = args.dataset_root.resolve()
     instant_root = args.instant_root.resolve()
     snapshots_root = args.snapshots_root.resolve()
+    # Build common extra args that will be forwarded to run-ngp-aina.py
+    common_extra_args = list(args.render_extra_args or [])
+
+    if args.wandb:
+        common_extra_args.append("--wandb")
+        if args.wandb_project:
+            common_extra_args += ["--wandb_project", args.wandb_project]
+        if args.wandb_experiment:
+            # We pass the same experiment name to each per-frame run; you can
+            # encode frame index inside run-ngp-aina if needed.
+            common_extra_args += ["--wandb_experiment", args.wandb_experiment]
 
     # init logging (overwrites previous log file)
     log_file_path = dataset_root / "training_log.txt"
@@ -419,6 +465,10 @@ def main():
 
         copy_transforms_to_all(out_path, dataset_root, all_frames)
 
+        if args.colmap_only:
+            logger.error("Finished creating colmap data.")
+            sys.exit(0)
+
         snapshots_root.mkdir(parents=True, exist_ok=True)
         train_frames(
             instant_root=instant_root,
@@ -426,7 +476,7 @@ def main():
             first_steps=args.first_step_n_steps,
             follow_steps=args.following_n_steps,
             snapshots_root=snapshots_root,
-            extra_args=(args.render_extra_args or []),
+            extra_args=common_extra_args,
         )
     else:
         logger.info("--- Render-only mode enabled. Skipping COLMAP and training. ---")
@@ -459,11 +509,12 @@ def main():
             output_path=final_output,
             snapshots_root=snapshots_root,
             keep_frames=args.render_keep_frames,
-            extra_args=(args.render_extra_args or []),
+            extra_args=common_extra_args,
             aabb_rendering=args.aabb_rendering,
             ffmpeg_path=ffmpeg_path,
             keep_temp_dir=args.keep_temp_dir,
         )
+
         logger.info("Combined video saved to: %s", final_output)
 
     logger.info("Script finished successfully.")

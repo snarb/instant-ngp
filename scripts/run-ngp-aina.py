@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 import pyngp as ngp  # noqa
 
+# --- NEW / W&B + face-crop helpers ---
 
 try:
     import wandb  # noqa
@@ -64,6 +65,8 @@ def init_wandb_from_args(args):
             "val_interval": args.val_interval,
             "val_max_images": args.val_max_images,
             "face_crop": args.face_crop,
+            "n_max": args.n_max,
+            "hash_table_size": args.hash_table_size,
         },
     )
     print("[W&B] Logging enabled.")
@@ -555,6 +558,28 @@ def parse_args():
         help="Optional path to Haar cascade XML; defaults to cv2.data.haarcascades frontalface.",
     )
 
+    # --- NEW / N_max and hash table size arguments ---
+    parser.add_argument(
+        "--n_max",
+        type=int,
+        default=-1,
+        help=(
+            "Maximum number of samples per ray during training. "
+            "Higher values allow more detailed scenes but use more memory. "
+            "Typical values: 512-2048. Use -1 to keep the default."
+        ),
+    )
+    parser.add_argument(
+        "--hash_table_size",
+        type=int,
+        default=-1,
+        help=(
+            "Size of the hash table (log2). Controls the capacity of the feature grid. "
+            "Typical values: 19 (2^19 = ~524k entries) to 21 (2^21 = ~2M entries). "
+            "Use -1 to keep the default (typically 19)."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -646,6 +671,14 @@ if __name__ == "__main__":
     if args.near_distance >= 0.0:
         print("NeRF training ray near_distance ", args.near_distance)
         testbed.nerf.training.near_distance = args.near_distance
+
+    if args.n_max > 0:
+        print(f"Setting N_max (max samples per ray) to {args.n_max}")
+        testbed.nerf.training.n_max = args.n_max
+
+    if args.hash_table_size > 0:
+        print(f"Setting hash table size to 2^{args.hash_table_size} = {2**args.hash_table_size} entries")
+        testbed.nerf.training.hash_table_size = args.hash_table_size
 
     if args.train_mode:
         if args.train_mode.lower() == "nerf":

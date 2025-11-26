@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Split instant-NGP transforms.json into train/test sets.
 
